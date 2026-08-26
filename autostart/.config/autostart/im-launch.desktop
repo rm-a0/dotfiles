@@ -1,0 +1,10 @@
+# Overrides /etc/xdg/autostart/im-launch.desktop; delete to restore it.
+# Starts the whole ibus stack (~40MB, X11 bridges) for an input
+# method that is not configured, and forces GTK_IM_MODULE=ibus on everything.
+# Run `im-config` if you ever need one.
+[Desktop Entry]
+Type=Application
+Name=im-launch (disabled by the rice)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

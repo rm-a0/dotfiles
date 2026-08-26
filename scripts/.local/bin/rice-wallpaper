@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# rice-wallpaper — single source of truth for the active wallpaper.
+#
+# The active image is a symlink at $XDG_STATE_HOME/rice/current-wallpaper,
+# read by hyprpaper and hyprlock. Nothing else hardcodes a path.
+#
+#   rice-wallpaper set <file>   apply and remember an image
+#   rice-wallpaper menu         pick one with fuzzel
+#   rice-wallpaper random       pick one at random
+#   rice-wallpaper restore      re-apply the remembered one (login)
+#   rice-wallpaper current      print the active image path
+#   rice-wallpaper list         print available images
+
+set -euo pipefail
+
+WALLPAPER_DIR="${RICE_WALLPAPER_DIR:-$HOME/Pictures/wallpapers}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/rice"
+LINK="$STATE_DIR/current-wallpaper"
+
+die() { printf 'rice-wallpaper: %s\n' "$*" >&2; exit 1; }
+
+list() {
+    [ -d "$WALLPAPER_DIR" ] || die "no such directory: $WALLPAPER_DIR"
+    find -L "$WALLPAPER_DIR" -maxdepth 1 -type f \
+        \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) \
+        | sort
+}
+
+apply() {
+    local img
+    img="$(readlink -f "$1")" || die "cannot resolve $1"
+    [ -r "$img" ] || die "not readable: $img"
+
+    mkdir -p "$STATE_DIR"
+    ln -sfn "$img" "$LINK"
+
+    # Restart, not IPC: hyprpaper 0.8.x rejects preload/reload/unload and
+    # hangs on `wallpaper` with large images. reset-failed first or fast
+    # switching trips systemd's start-rate limit.
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user reset-failed hyprpaper 2>/dev/null || true
+        systemctl --user restart hyprpaper 2>/dev/null \
+            || printf 'rice-wallpaper: could not restart hyprpaper\n' >&2
+    fi
+
+    # Opt-in: `rice-accent auto on`.
+    if [ -e "$STATE_DIR/accent-auto" ] && command -v rice-accent >/dev/null 2>&1; then
+        rice-accent from "$img" >/dev/null || true
+    fi
+
+    printf '%s\n' "$img"
+}
+
+cmd="${1:-menu}"
+case "$cmd" in
+    set)
+        [ $# -ge 2 ] || die "usage: rice-wallpaper set <file>"
+        apply "$2" >/dev/null
+        notify "$(readlink -f "$2")"
+        ;;
+    menu)
+        command -v fuzzel >/dev/null 2>&1 || die "fuzzel is not installed"
+        mapfile -t images < <(list)
+        [ ${#images[@]} -gt 0 ] || die "no images in $WALLPAPER_DIR"
+        choice="$(printf '%s\n' "${images[@]##*/}" |
+                  fuzzel --dmenu --prompt 'wallpaper> ' --lines 10)" || exit 0
+        [ -n "$choice" ] || exit 0
+        apply "$WALLPAPER_DIR/$choice" >/dev/null
+        notify "$WALLPAPER_DIR/$choice"
+        ;;
+    random)
+        mapfile -t images < <(list)
+        [ ${#images[@]} -gt 0 ] || die "no images in $WALLPAPER_DIR"
+        current="$(readlink -f "$LINK" 2>/dev/null || true)"
+        # Avoid picking the image that is already showing.
+        if [ ${#images[@]} -gt 1 ]; then
+            for i in "${!images[@]}"; do
+                [ "${images[$i]}" = "$current" ] && unset 'images[i]'
+            done
+            images=("${images[@]}")
+        fi
+        pick="${images[RANDOM % ${#images[@]}]}"
+        apply "$pick" >/dev/null
+        notify "$pick"
+        ;;
+    restore)
+        if [ -L "$LINK" ] && [ -r "$LINK" ]; then
+            apply "$LINK" >/dev/null
+        else
+            first="$(list | head -n1)"
+            [ -n "$first" ] || die "no images in $WALLPAPER_DIR"
+            apply "$first" >/dev/null
+        fi
+        ;;
+    current)
+        [ -L "$LINK" ] || die "no wallpaper set"
+        readlink -f "$LINK"
+        ;;
+    list) list ;;
+    *) die "unknown command: $cmd (try: set menu random restore current list)" ;;
+esac

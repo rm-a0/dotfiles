@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# rice-wifi-menu — text fallback for rice-wifi (fuzzel dropdown).
+# Used when GtkLayerShell is unavailable; rice-wifi is the GTK panel.
+# nm-connection-editor stays available under "Settings".
+
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+# shellcheck source=/dev/null
+source "$(dirname "$(dirname "$SELF")")/lib/rice/menu.sh"
+
+rice_toggle_guard
+
+# Codepoints, not pasted glyphs -- those get stripped in transit.
+I_WIFI=$(printf '\uf1eb')   # nf-fa-wifi
+I_LOCK=$(printf '\uf023')   # nf-fa-lock
+I_OK=$(printf '\uf00c')     # nf-fa-check
+I_OFF=$(printf '\uf05e')    # nf-fa-ban
+I_SCAN=$(printf '\uf021')   # nf-fa-refresh
+I_COG=$(printf '\uf013')    # nf-fa-cog
+
+command -v nmcli >/dev/null 2>&1 || { rice_notify "Wi-Fi" "nmcli not installed"; exit 1; }
+
+radio="$(nmcli -t -f WIFI radio 2>/dev/null || echo disabled)"
+
+if [ "$radio" != "enabled" ]; then
+    choice="$(printf '%s\n' "$I_WIFI  Turn Wi-Fi on" "$I_COG  Settings…" | rice_menu "Wi-Fi (off)" 2)" || exit 0
+    case "$choice" in
+        *"Turn Wi-Fi on") nmcli radio wifi on && rice_notify "Wi-Fi" "Wi-Fi enabled" ;;
+        *"Settings…")     setsid nm-connection-editor >/dev/null 2>&1 & ;;
+    esac
+    exit 0
+fi
+
+# nmcli terse output escapes a literal colon inside an SSID as "\:", which
+# would otherwise be indistinguishable from the field separator. Swap it for
+# a sentinel before splitting, then put it back.
+SEP=$'\x01'
+mapfile -t rows < <(
+    nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list 2>/dev/null \
+        | sed "s/\\\\:/$SEP/g"
+)
+
+# Collapse to one entry per SSID, keeping the strongest signal and the
+# connected mark.
+declare -A best_signal=() best_security=() is_active=()
+order=()
+for row in "${rows[@]}"; do
+    IFS=':' read -r inuse ssid signal security <<< "$row"
+    ssid="${ssid//$SEP/:}"
+    [ -z "$ssid" ] && continue                       # hidden network, no name to show
+    signal="${signal:-0}"
+
+    [ "$inuse" = "*" ] && is_active["$ssid"]=1
+
+    if [ -z "${best_signal[$ssid]:-}" ]; then
+        order+=("$ssid")
+        best_signal["$ssid"]="$signal"
+        best_security["$ssid"]="$security"
+    elif [ "$signal" -gt "${best_signal[$ssid]}" ] 2>/dev/null; then
+        best_signal["$ssid"]="$signal"
+        best_security["$ssid"]="$security"
+    fi
+done
+
+entries=()
+declare -A ssid_of=()
+for ssid in "${order[@]}"; do
+    signal="${best_signal[$ssid]}"
+    security="${best_security[$ssid]}"
+
+    mark="  "; [ -n "${is_active[$ssid]:-}" ] && mark="$I_OK"
+    lock=" "; [ -n "$security" ] && [ "$security" != "--" ] && lock="$I_LOCK"
+
+    label="$(printf '%s %s  %-22.22s %3s%%  %s' "$mark" "$I_WIFI" "$ssid" "$signal" "$lock")"
+    entries+=("$label")
+    ssid_of["$label"]="$ssid"
+done
+
+entries+=("$I_SCAN  Rescan" "$I_OFF  Turn Wi-Fi off" "$I_COG  Settings…")
+
+choice="$(printf '%s\n' "${entries[@]}" | rice_menu "Wi-Fi" 12 46)" || exit 0
+[ -n "$choice" ] || exit 0
+
+case "$choice" in
+    *"Rescan")
+        nmcli device wifi rescan >/dev/null 2>&1 || true
+        sleep 2
+        exec "$SELF"
+        ;;
+    *"Turn Wi-Fi off")
+        nmcli radio wifi off && rice_notify "Wi-Fi" "Wi-Fi disabled"
+        ;;
+    *"Settings…")
+        setsid nm-connection-editor >/dev/null 2>&1 &
+        ;;
+    *)
+        ssid="${ssid_of[$choice]:-}"
+        [ -n "$ssid" ] || exit 0
+
+        # Already connected to this one: offer to drop it instead of reconnecting.
+        if [[ "$choice" == "$I_OK"* ]]; then
+            confirm="$(printf '%s\n' "Disconnect from $ssid" "Cancel" | rice_menu "Connected" 2 46)" || exit 0
+            [[ "$confirm" == Disconnect* ]] && {
+                nmcli connection down id "$ssid" >/dev/null 2>&1 \
+                    && rice_notify "Wi-Fi" "Disconnected" "$ssid"
+            }
+            exit 0
+        fi
+
+        # A saved profile connects without asking for the password again.
+        if nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$ssid"; then
+            if nmcli connection up id "$ssid" >/dev/null 2>&1; then
+                rice_notify "Wi-Fi" "Connected" "$ssid"
+            else
+                rice_notify "Wi-Fi" "Failed to connect" "$ssid"
+            fi
+            exit 0
+        fi
+
+        if nmcli device wifi connect "$ssid" >/dev/null 2>&1; then
+            rice_notify "Wi-Fi" "Connected" "$ssid"
+            exit 0
+        fi
+
+        password="$(rice_password "Password for $ssid")" || exit 0
+        [ -n "$password" ] || exit 0
+        if nmcli device wifi connect "$ssid" password "$password" >/dev/null 2>&1; then
+            rice_notify "Wi-Fi" "Connected" "$ssid"
+        else
+            rice_notify "Wi-Fi" "Failed to connect" "$ssid"
+        fi
+        ;;
+esac

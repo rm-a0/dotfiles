@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""rice-bluetooth — paired devices under the bar's bluetooth module.
+
+Pairing stays in blueman-manager (needs an agent and a PIN dialogue).
+Falls back to rice-bluetooth-menu (fuzzel) without GtkLayerShell.
+"""
+
+import os
+import re
+import sys
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"),
+)
+
+from rice.panel import (  # noqa: E402
+    REFRESH, RicePanel, notify, run, run_async, run_cmd,
+)
+
+I_BT = "\uf293"                 # nf-fa-bluetooth
+I_BT_OFF = "\U000f00b2"         # nf-md-bluetooth_off
+
+# By name, first match wins -- bluetoothctl's Icon property is unreliable.
+KINDS = (
+    (r"head|buds|airpod|wh-|wf-|jbl|bose|earphone", "\uf025"),        # nf-fa-headphones
+    (r"speaker|soundbar|boom|flip|charge",          "\U000f04c3"),    # nf-md-speaker
+    (r"keyboard|keychron|kbd",                      "\uf11c"),        # nf-fa-keyboard
+    (r"mouse|mx |trackpad|magic",                   "\uf245"),        # nf-fa-mouse_pointer
+    (r"phone|pixel|iphone|galaxy|oneplus",          "\U000f011c"),    # nf-md-cellphone
+    (r"watch|band|fit",                             "\uf017"),        # nf-fa-clock_o
+)
+
+MAX_ROWS = 7             # beyond this the list scrolls
+SCAN_SECONDS = 8
+
+
+def powered():
+    for line in run_cmd("bluetoothctl", "show").splitlines():
+        if "Powered:" in line:
+            return line.split()[-1] == "yes"
+    return False
+
+
+def device_icon(name):
+    lowered = name.lower()
+    for pattern, glyph in KINDS:
+        if re.search(pattern, lowered):
+            return glyph
+    return I_BT
+
+
+def devices():
+    """[(mac, name, connected)] — connected first, then the rest by name."""
+    connected = {
+        line.split()[1]
+        for line in run_cmd("bluetoothctl", "devices", "Connected").splitlines()
+        if line.startswith("Device ")
+    }
+
+    found = []
+    for line in run_cmd("bluetoothctl", "devices").splitlines():
+        if not line.startswith("Device "):
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        mac, name = parts[1], parts[2]
+        found.append((mac, name, mac in connected))
+
+    return sorted(found, key=lambda d: (not d[2], d[1].lower()))
+
+
+class BluetoothPanel(RicePanel):
+    NAME = "rice-bluetooth"
+
+    def __init__(self):
+        self.busy = None
+        self.devices = devices() if powered() else []
+        super().__init__()
+
+    # ---- layout -------------------------------------------------------
+    def build(self, box):
+        on = powered()
+        self.header(box, I_BT if on else I_BT_OFF, "Bluetooth",
+                    active=on, on_toggle=self.set_power)
+
+        if not on:
+            self.info_row(box, "Bluetooth is turned off", "", dim=True)
+        elif self.busy:
+            self.spinner_row(box, self.busy)
+        else:
+            self.heading(box, "DEVICES")
+            if self.devices:
+                self.select_list(
+                    box,
+                    [(mac, name, connected, device_icon(name), "")
+                     for mac, name, connected in self.devices],
+                    self.on_pick,
+                    max_visible=MAX_ROWS,
+                )
+            else:
+                self.info_row(box, "no paired devices", "", dim=True)
+
+        self.separator(box)
+        if on and not self.busy:
+            self.action_row(box, REFRESH, "Scan for devices", self.scan)
+        self.settings_button(box, "Bluetooth settings", ["blueman-manager"])
+
+    # ---- actions ------------------------------------------------------
+    def set_power(self, wanted):
+        if self.busy or wanted == powered():
+            return
+        self.start("Turning Bluetooth on…" if wanted else "Turning Bluetooth off…",
+                   ["bluetoothctl", "power", "on" if wanted else "off"],
+                   lambda _out: self.reload())
+
+    def scan(self):
+        # --timeout keeps it non-interactive.
+        self.start(f"Scanning for {SCAN_SECONDS}s…",
+                   ["bluetoothctl", "--timeout", str(SCAN_SECONDS), "scan", "on"],
+                   lambda _out: self.reload())
+
+    def on_pick(self, mac):
+        current = next((d for d in self.devices if d[0] == mac), None)
+        if current is None:
+            return
+        _, name, connected = current
+
+        if connected:
+            self.start(f"Disconnecting {name}…",
+                       ["bluetoothctl", "disconnect", mac],
+                       lambda out: self.done(out, name, "Disconnected",
+                                             "Failed to disconnect"))
+        else:
+            self.start(f"Connecting to {name}…",
+                       ["bluetoothctl", "connect", mac],
+                       lambda out: self.done(out, name, "Connected",
+                                             "Failed to connect"))
+
+    def start(self, message, command, on_done):
+        """Show the spinner, run the command off the main loop."""
+        self.busy = message
+        self.refresh()
+        run_async(command, on_done)
+
+    def done(self, output, name, ok_message, fail_message):
+        # bluetoothctl exits 0 even on failure.
+        ok = "successful" in output.lower()
+        notify("Bluetooth", ok_message if ok else fail_message, name)
+        if ok:
+            self.dismiss()
+        else:
+            self.reload()
+
+    def reload(self):
+        self.busy = None
+        self.devices = devices() if powered() else []
+        self.refresh()
+
+
+if __name__ == "__main__":
+    run(BluetoothPanel, fallback="rice-bluetooth-menu")

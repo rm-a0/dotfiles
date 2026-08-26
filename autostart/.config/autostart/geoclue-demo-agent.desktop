@@ -1,0 +1,8 @@
+# Overrides /etc/xdg/autostart/geoclue-demo-agent.desktop; delete to restore it.
+# Nothing here asks for location.
+[Desktop Entry]
+Type=Application
+Name=Geoclue demo agent (disabled by the rice)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

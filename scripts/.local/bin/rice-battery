@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""rice-battery — charge, health and power profile.
+
+sysfs rather than upower: it is four file reads and one less dependency.
+"""
+
+import os
+import sys
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"),
+)
+
+from rice.panel import Gtk, RicePanel, read_file, run, run_cmd  # noqa: E402
+
+I_BATTERY = "\uf240"       # nf-fa-battery_full
+I_CHARGING = "\uf0e7"      # nf-fa-bolt
+I_PLUG = "\uf1e6"          # nf-fa-plug
+
+# Discharge icons, emptiest first.
+I_LEVELS = ["\uf244", "\uf243", "\uf242", "\uf241", "\uf240"]
+
+PROFILE_ICONS = {
+    "performance": "",   # nf-fa-rocket
+    "balanced": "",      # nf-fa-balance_scale
+    "power-saver": "",   # nf-fa-leaf
+}
+
+SYS = "/sys/class/power_supply"
+
+
+def battery_path():
+    if not os.path.isdir(SYS):
+        return None
+    for name in sorted(os.listdir(SYS)):
+        if read_file(f"{SYS}/{name}/type") == "Battery":
+            return f"{SYS}/{name}"
+    return None
+
+
+def as_int(path, default=0):
+    value = read_file(path)
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def battery_info(path):
+    """Charge, status and the derived figures."""
+    info = {
+        "capacity": as_int(f"{path}/capacity"),
+        "status": read_file(f"{path}/status", "Unknown"),
+        "cycles": as_int(f"{path}/cycle_count"),
+    }
+
+    # energy_* (µWh) or charge_* (µAh); only ratios are used.
+    now = as_int(f"{path}/energy_now") or as_int(f"{path}/charge_now")
+    full = as_int(f"{path}/energy_full") or as_int(f"{path}/charge_full")
+    design = (as_int(f"{path}/energy_full_design")
+              or as_int(f"{path}/charge_full_design"))
+    power = as_int(f"{path}/power_now") or as_int(f"{path}/current_now")
+
+    info["health"] = int(round(full / design * 100)) if design else 0
+    info["watts"] = power / 1_000_000 if power else 0.0
+
+    remaining = None
+    if power:
+        if info["status"] == "Discharging":
+            remaining = now / power
+        elif info["status"] == "Charging" and full > now:
+            remaining = (full - now) / power
+    info["hours"] = remaining
+    return info
+
+
+def level_icon(info):
+    if info["status"] in ("Charging", "Full"):
+        return I_CHARGING
+    if info["status"] == "Not charging":
+        return I_PLUG
+    index = min(len(I_LEVELS) - 1, max(0, info["capacity"] * len(I_LEVELS) // 101))
+    return I_LEVELS[index]
+
+
+def format_duration(hours):
+    if hours is None:
+        return None
+    total = int(round(hours * 60))
+    return f"{total // 60}h {total % 60:02d}m"
+
+
+def profiles():
+    """[(name, active)], most performant first."""
+    out = run_cmd("powerprofilesctl", "list")
+    found, active = [], run_cmd("powerprofilesctl", "get").strip()
+    for line in out.splitlines():
+        stripped = line.strip()
+        if stripped.endswith(":") and not stripped.startswith(("CpuDriver", "PlatformDriver", "Degraded")):
+            name = stripped.rstrip(":").lstrip("* ").strip()
+            if name:
+                found.append((name, name == active))
+    return found
+
+
+class BatteryPanel(RicePanel):
+    NAME = "rice-battery"
+
+    def build(self, box):
+        path = battery_path()
+
+        if path is None:
+            self.header(box, I_BATTERY, "Battery")
+            self.info_row(box, "no battery detected", "", dim=True)
+        else:
+            info = battery_info(path)
+            self.header(box, level_icon(info), "Battery")
+
+            top = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+            top.get_style_context().add_class("row")
+            pct = Gtk.Label(label=f"{info['capacity']}%", xalign=0)
+            pct.get_style_context().add_class("big")
+            state = Gtk.Label(label=info["status"], xalign=1)
+            state.get_style_context().add_class("dim")
+            state.set_hexpand(True)
+            top.pack_start(pct, False, False, 0)
+            top.pack_start(state, True, True, 0)
+            box.pack_start(top, False, False, 2)
+
+            remaining = format_duration(info["hours"])
+            if remaining:
+                label = "Time to full" if info["status"] == "Charging" else "Time remaining"
+                self.info_row(box, label, remaining)
+            if info["watts"]:
+                self.info_row(box, "Draw", f"{info['watts']:.1f} W")
+            if info["health"]:
+                self.info_row(box, "Health", f"{info['health']}% of design")
+            if info["cycles"]:
+                self.info_row(box, "Cycles", str(info["cycles"]))
+
+        entries = profiles()
+        if entries:
+            self.separator(box)
+            self.heading(box, "POWER PROFILE")
+            self.select_list(
+                box,
+                [(name, name, active, PROFILE_ICONS.get(name, ""), "")
+                 for name, active in entries],
+                lambda name: run_cmd("powerprofilesctl", "set", name),
+            )
+
+        self.separator(box)
+        self.settings_button(box, "Power settings",
+                             ["gnome-control-center", "power"])
+
+
+if __name__ == "__main__":
+    run(BatteryPanel)

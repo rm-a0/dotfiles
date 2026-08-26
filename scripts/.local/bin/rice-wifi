@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""rice-wifi — network list under the bar's network module.
+
+Falls back to rice-wifi-menu (fuzzel) without GtkLayerShell.
+"""
+
+import os
+import sys
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"),
+)
+
+from rice.panel import (  # noqa: E402
+    REFRESH, RicePanel, notify, run, run_async, run_cmd,
+)
+
+I_WIFI = "\uf1eb"          # nf-fa-wifi
+I_LOCK = "\uf023"          # nf-fa-lock
+I_OFF = "\U000f092f"       # nf-md-wifi_off
+
+# Signal strength, weakest first.
+I_BARS = [
+    "\U000f092d",          # nf-md-wifi_strength_outline
+    "\U000f091f",          # nf-md-wifi_strength_1
+    "\U000f0922",          # nf-md-wifi_strength_2
+    "\U000f0925",          # nf-md-wifi_strength_3
+    "\U000f0928",          # nf-md-wifi_strength_4
+]
+
+MAX_ROWS = 7             # beyond this the list scrolls
+RESCAN = ["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY",
+          "device", "wifi", "list", "--rescan", "yes"]
+TIMEOUT = 20             # seconds; nmcli's default wait is 90
+
+
+def nm_split(line):
+    r"""Split one `nmcli -t` row: it escapes `:` and `\` inside fields."""
+    fields, current, escaped = [], [], False
+    for char in line:
+        if escaped:
+            current.append(char)
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == ":":
+            fields.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+    fields.append("".join(current))
+    return fields
+
+
+def radio_on():
+    return run_cmd("nmcli", "-t", "-f", "WIFI", "radio").strip() == "enabled"
+
+
+def saved_profiles():
+    return {
+        nm_split(line)[0]
+        for line in run_cmd("nmcli", "-t", "-f", "NAME", "connection", "show").splitlines()
+        if line
+    }
+
+
+def parse_networks(output):
+    """[(ssid, signal, secured, active)], strongest first, one row per SSID.
+
+    nmcli lists an SSID once per AP; collapse to the strongest, keeping the
+    in-use mark even when that is on a weaker one.
+    """
+    best = {}
+    for line in output.splitlines():
+        if not line:
+            continue
+        fields = nm_split(line)
+        if len(fields) < 4:
+            continue
+        in_use, ssid, signal, security = fields[0], fields[1], fields[2], fields[3]
+        if not ssid:
+            continue                      # hidden network, no name to show
+        try:
+            signal = int(signal)
+        except ValueError:
+            signal = 0
+        secured = bool(security) and security != "--"
+
+        previous = best.get(ssid)
+        if previous is None or signal > previous[1]:
+            best[ssid] = (ssid, signal, secured, previous[3] if previous else False)
+        if in_use == "*":
+            entry = best[ssid]
+            best[ssid] = (entry[0], entry[1], entry[2], True)
+
+    return sorted(best.values(), key=lambda n: (not n[3], -n[1]))
+
+
+def scan(force=False):
+    """The network list. force=True hits the radio; otherwise cached.
+
+    Cached opens instantly; anything else blocks before the window maps.
+    A background rescan follows.
+    """
+    return run_cmd(
+        "nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY",
+        "device", "wifi", "list", "--rescan", "yes" if force else "no",
+    )
+
+
+class WifiPanel(RicePanel):
+    NAME = "rice-wifi"
+
+    def __init__(self):
+        # busy = show a spinner; ask = SSID awaiting a password.
+        self.busy = None
+        self.ask = None
+        on = radio_on()
+        self.networks = parse_networks(scan()) if on else []
+        super().__init__()
+
+        # Fresh scan after the window is up, swapped in when it lands.
+        if on:
+            run_async(RESCAN, self.auto_scanned)
+
+    # ---- layout -------------------------------------------------------
+    def build(self, box):
+        on = radio_on()
+        self.header(box, I_WIFI if on else I_OFF, "Wi-Fi",
+                    active=on, on_toggle=self.set_radio)
+
+        if not on:
+            self.info_row(box, "Wi-Fi is turned off", "", dim=True)
+        elif self.busy:
+            self.spinner_row(box, self.busy)
+        elif self.ask:
+            self.heading(box, "PASSWORD")
+            self.info_row(box, self.ask, "", dim=True)
+            self.entry_row(box, "Network password", self.connect_with_password,
+                           password=True)
+        else:
+            self.heading(box, "NETWORKS")
+            if self.networks:
+                self.select_list(
+                    box,
+                    [(ssid, ssid, active, bars(signal),
+                      f"{signal}% {I_LOCK if secured else ' '}")
+                     for ssid, signal, secured, active in self.networks],
+                    self.on_pick,
+                    max_visible=MAX_ROWS,
+                )
+            else:
+                self.info_row(box, "no networks found", "", dim=True)
+
+        self.separator(box)
+        if on and not self.busy:
+            self.action_row(box, REFRESH, "Rescan", self.rescan)
+        self.settings_button(box, "Network settings", ["nm-connection-editor"])
+
+    # ---- actions ------------------------------------------------------
+    def set_radio(self, wanted):
+        if self.busy or wanted == radio_on():
+            return
+        self.start("Turning Wi-Fi on…" if wanted else "Turning Wi-Fi off…",
+                   ["nmcli", "radio", "wifi", "on" if wanted else "off"],
+                   lambda _out: self.reload(force=wanted))
+
+    def rescan(self):
+        self.start("Scanning…", RESCAN, self.scanned)
+
+    def auto_scanned(self, output):
+        """The background rescan landed. Drop it if the user has moved on."""
+        if self.busy or self.ask:
+            return
+        networks = parse_networks(output)
+        if networks:
+            self.networks = networks
+            self.refresh()
+
+    def scanned(self, output):
+        self.busy = None
+        self.networks = parse_networks(output)
+        self.refresh()
+
+    def reload(self, force=False):
+        self.busy = None
+        self.ask = None
+        self.networks = parse_networks(scan(force)) if radio_on() else []
+        self.refresh()
+
+    def on_pick(self, ssid):
+        current = next((n for n in self.networks if n[0] == ssid), None)
+        if current is None:
+            return
+        _, _, secured, active = current
+
+        if active:
+            self.start(f"Disconnecting from {ssid}…",
+                       ["nmcli", "connection", "down", "id", ssid],
+                       lambda out: self.done(out, ssid, "Disconnected",
+                                             "Failed to disconnect"))
+        elif ssid in saved_profiles():
+            # A saved profile holds the key already; no need to ask again.
+            self.start(f"Connecting to {ssid}…",
+                       ["nmcli", "-w", str(TIMEOUT), "connection", "up", "id", ssid],
+                       lambda out: self.done(out, ssid, "Connected",
+                                             "Failed to connect"))
+        elif secured:
+            # nmcli with no secrets agent hangs until it times out.
+            self.ask = ssid
+            self.refresh()
+        else:
+            self.start(f"Connecting to {ssid}…",
+                       ["nmcli", "-w", str(TIMEOUT), "device", "wifi", "connect", ssid],
+                       lambda out: self.done(out, ssid, "Connected",
+                                             "Failed to connect"))
+
+    def connect_with_password(self, password):
+        ssid, self.ask = self.ask, None
+        if not password:
+            self.reload()
+            return
+        self.start(f"Connecting to {ssid}…",
+                   ["nmcli", "-w", str(TIMEOUT), "device", "wifi", "connect", ssid,
+                    "password", password],
+                   lambda out: self.done(out, ssid, "Connected",
+                                         "Failed to connect"))
+
+    def start(self, message, command, on_done):
+        """Show the spinner, run the command off the main loop."""
+        self.busy = message
+        self.refresh()
+        run_async(command, on_done)
+
+    def done(self, output, ssid, ok_message, fail_message):
+        # nmcli puts success on stdout, every failure on stderr.
+        ok = "successful" in output.lower()
+        self.finish(ok_message if ok else fail_message, ssid, ok)
+
+    def finish(self, summary, ssid, ok):
+        notify("Wi-Fi", summary, ssid)
+        if ok:
+            self.dismiss()
+        else:
+            self.reload()
+
+
+def bars(signal):
+    """Signal percentage to one of five strength glyphs."""
+    return I_BARS[min(len(I_BARS) - 1, max(0, signal * len(I_BARS) // 101))]
+
+
+if __name__ == "__main__":
+    run(WifiPanel, fallback="rice-wifi-menu")

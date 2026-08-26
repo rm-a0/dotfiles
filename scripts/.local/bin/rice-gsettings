@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# rice-gsettings — apply the desktop settings that live in dconf.
+#
+# Portals, libadwaita and Flatpak apps read dconf, not settings.ini. dconf is
+# binary and cannot be stowed. Keep in sync with gtk/*/settings.ini.
+
+set -euo pipefail
+command -v gsettings >/dev/null 2>&1 || { echo "gsettings not found"; exit 0; }
+
+# Without a session bus gsettings warns and silently discards every write.
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    exec dbus-run-session -- "$0" "$@"
+fi
+
+i=org.gnome.desktop.interface
+gsettings set $i gtk-theme            'Adwaita-dark'
+gsettings set $i color-scheme         'prefer-dark'
+gsettings set $i icon-theme           'Papirus-Dark'
+gsettings set $i cursor-theme         'Bibata-Modern-Classic'
+gsettings set $i cursor-size          24
+gsettings set $i font-name            'Cantarell 11'
+gsettings set $i monospace-font-name  'JetBrainsMono Nerd Font Mono 11'
+gsettings set $i font-antialiasing    'rgba'
+gsettings set $i font-hinting         'slight'
+
+echo "dconf desktop settings applied"

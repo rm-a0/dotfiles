@@ -1,0 +1,8 @@
+# Overrides /etc/xdg/autostart/nm-applet.desktop; delete to restore it.
+# The bar opens rice-wifi instead.
+[Desktop Entry]
+Type=Application
+Name=nm-applet (disabled by the rice)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

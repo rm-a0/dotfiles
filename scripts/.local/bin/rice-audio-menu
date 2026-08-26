@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# rice-audio-menu — text fallback for rice-audio (fuzzel dropdown).
+# Used when GtkLayerShell is unavailable; rice-audio is the GTK panel.
+# pavucontrol stays available under "Settings" for per-application routing.
+
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+# shellcheck source=/dev/null
+source "$(dirname "$(dirname "$SELF")")/lib/rice/menu.sh"
+
+rice_toggle_guard
+
+I_SPK=$(printf '\uf028')   # nf-fa-volume_up
+I_MUTE=$(printf '\uf026')  # nf-fa-volume_off
+I_MIC=$(printf '\uf130')   # nf-fa-microphone
+I_ON=$(printf '\uf00c')    # nf-fa-check
+I_UP=$(printf '\uf067')    # nf-fa-plus
+I_DOWN=$(printf '\uf068')  # nf-fa-minus
+I_COG=$(printf '\uf013')   # nf-fa-cog
+
+command -v wpctl >/dev/null 2>&1 || { rice_notify "Audio" "wpctl not installed"; exit 1; }
+
+# `wpctl status` renders a tree; pull one section out of it. Lines look like
+#     │  *   58. Some Device Name [vol: 0.35]
+# where the asterisk marks the current default.
+section() {
+    wpctl status 2>/dev/null | sed -n "/├─ $1:/,/├─ /p" | sed '1d;$d'
+}
+
+vol_raw="$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null || echo 'Volume: 0.00')"
+muted=no
+case "$vol_raw" in *MUTED*) muted=yes ;; esac
+vol_pct=$(awk '{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+$/){printf "%d", $i*100; exit}}' <<< "$vol_raw")
+vol_pct="${vol_pct:-0}"
+
+icon="$I_SPK"; [ "$muted" = yes ] && icon="$I_MUTE"
+
+entries=()
+declare -A id_of=() kind_of=()
+
+add_devices() {
+    local kind="$1" label_icon="$2"
+    local -a ids=() names=() marks=()
+    local line id name mark
+
+    while IFS= read -r line; do
+        [[ "$line" =~ ([*]?)[[:space:]]*([0-9]+)\.[[:space:]]+(.*)[[:space:]]\[vol ]] || continue
+        mark="${BASH_REMATCH[1]}"
+        id="${BASH_REMATCH[2]}"
+        name="${BASH_REMATCH[3]}"
+        [[ "$line" == *"*"* ]] && mark="*" || mark=""
+        ids+=("$id"); names+=("$name"); marks+=("$mark")
+    done < <(section "$kind")
+
+    [ ${#ids[@]} -eq 0 ] && return 0
+
+    local -a short=()
+    mapfile -t short < <(printf '%s\n' "${names[@]}" | rice_trim_common_prefix)
+
+    local i lbl m
+    for i in "${!ids[@]}"; do
+        m="  "; [ -n "${marks[$i]}" ] && m="$I_ON"
+        lbl="$(printf '%s %s  %s' "$m" "$label_icon" "${short[$i]:-${names[$i]}}")"
+        entries+=("$lbl")
+        id_of["$lbl"]="${ids[$i]}"
+        kind_of["$lbl"]="$kind"
+    done
+}
+
+add_devices "Sinks"   "$I_SPK"
+add_devices "Sources" "$I_MIC"
+
+mute_label="$icon  $([ "$muted" = yes ] && echo Unmute || echo Mute)  (${vol_pct}%)"
+entries+=("$mute_label" "$I_UP  Volume +5" "$I_DOWN  Volume -5" "$I_COG  Settings…")
+
+choice="$(printf '%s\n' "${entries[@]}" | rice_menu "Audio  ${vol_pct}%" 12 44)" || exit 0
+[ -n "$choice" ] || exit 0
+
+case "$choice" in
+    "$mute_label")
+        wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+        exec "$SELF"
+        ;;
+    *"Volume +5")
+        wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
+        exec "$SELF"
+        ;;
+    *"Volume -5")
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+        exec "$SELF"
+        ;;
+    *"Settings…")
+        setsid pavucontrol >/dev/null 2>&1 &
+        ;;
+    *)
+        id="${id_of[$choice]:-}"
+        [ -n "$id" ] || exit 0
+        wpctl set-default "$id"
+        if [ "${kind_of[$choice]}" = "Sinks" ]; then
+            rice_notify "Audio" "Output switched" "${choice#*  }"
+        else
+            rice_notify "Audio" "Input switched" "${choice#*  }"
+        fi
+        ;;
+esac

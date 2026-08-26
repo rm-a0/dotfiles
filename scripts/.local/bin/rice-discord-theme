@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""rice-discord-theme — fetch the Catppuccin build nearest the wallpaper accent.
+
+The theme ships pre-compiled with literal hex, so there is nothing to
+override; upstream publishes one build per accent instead. Always written
+under the same filename -- Vencord tracks enabled themes by name.
+
+    rice-discord-theme            follow ~/.local/state/rice/accent
+    rice-discord-theme <hex>      use a specific colour
+    rice-discord-theme --list     show the available accents
+"""
+
+import os
+import pathlib
+import re
+import subprocess
+import sys
+
+# Accents Catppuccin builds a Discord theme for.
+ACCENTS = {
+    "blue": "89b4fa", "green": "a6e3a1", "lavender": "b4befe",
+    "mauve": "cba6f7", "peach": "fab387", "pink": "f5c2e7",
+    "red": "f38ba8", "sapphire": "74c7ec", "sky": "89dceb",
+    "teal": "94e2d5", "yellow": "f9e2af",
+}
+URL = "https://catppuccin.github.io/discord/dist/catppuccin-mocha-{}.theme.css"
+
+HOME = pathlib.Path.home()
+STATE = pathlib.Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "rice"
+CONFIG = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+THEMES = CONFIG / "Vencord" / "themes"
+THEME_FILE = THEMES / "rice-accent.theme.css"
+CHOICE_FILE = STATE / "discord-accent"
+
+
+def to_lab(hex_colour):
+    """sRGB hex to CIE L*a*b*. RGB distance picks badly -- the accents are
+    all pastels of similar lightness, so what matters is hue.
+    """
+    r, g, b = (int(hex_colour[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    # sRGB -> linear
+    r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+               for c in (r, g, b))
+    # linear -> XYZ (D65)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 1.00000
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+    f = lambda t: t ** (1 / 3) if t > 0.008856 else 7.787 * t + 16 / 116  # noqa: E731
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def nearest(hex_colour):
+    target = to_lab(hex_colour)
+    return min(ACCENTS,
+               key=lambda name: sum((a - b) ** 2
+                                    for a, b in zip(to_lab(ACCENTS[name]), target)))
+
+
+def current_accent():
+    try:
+        value = (STATE / "accent").read_text().split()[0]
+    except (OSError, IndexError):
+        return "cba6f7"
+    return value if re.fullmatch(r"[0-9a-fA-F]{6}", value) else "cba6f7"
+
+
+def main():
+    args = sys.argv[1:]
+
+    if args and args[0] == "--list":
+        for name, hexv in sorted(ACCENTS.items()):
+            print(f"  {name:<9} #{hexv}")
+        return
+
+    accent = args[0].lstrip("#") if args else current_accent()
+    if not re.fullmatch(r"[0-9a-fA-F]{6}", accent):
+        sys.exit(f"rice-discord-theme: not a hex colour: {accent}")
+
+    choice = nearest(accent)
+
+    # Don't create a themes dir for something that isn't installed.
+    if not (CONFIG / "Vencord").is_dir():
+        print("rice-discord-theme: Vencord is not installed, nothing to do")
+        return
+
+    previous = CHOICE_FILE.read_text().strip() if CHOICE_FILE.exists() else ""
+    if previous == choice and THEME_FILE.exists():
+        print(f"accent #{accent} -> catppuccin {choice} (already current)")
+        return
+
+    THEMES.mkdir(parents=True, exist_ok=True)
+    # Temp file first -- a half-written theme is a broken Discord.
+    tmp = THEME_FILE.with_suffix(".tmp")
+    result = subprocess.run(
+        ["curl", "-sSL", "--fail", "--max-time", "20",
+         URL.format(choice), "-o", str(tmp)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0 or not tmp.exists() or tmp.stat().st_size < 1000:
+        tmp.unlink(missing_ok=True)
+        print(f"rice-discord-theme: could not fetch the {choice} theme "
+              f"-- keeping what is there", file=sys.stderr)
+        return
+
+    tmp.replace(THEME_FILE)
+    STATE.mkdir(parents=True, exist_ok=True)
+    CHOICE_FILE.write_text(choice + "\n")
+    print(f"accent #{accent} -> catppuccin {choice}  ({THEME_FILE})")
+
+
+if __name__ == "__main__":
+    main()

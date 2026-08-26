@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# rice-fetch — fastfetch with the wallpaper accent, and no logo in windows
+# too narrow for it. fastfetch has no config include and wraps overflow back
+# to column 0, so both have to happen out here.
+
+set -u
+
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/rice"
+
+# The block is 77 columns wide. Resizing after the fact still reflows it --
+# only --logo-position top avoids that entirely.
+MIN_COLS="${RICE_FETCH_MIN_COLS:-78}"
+
+cols="${COLUMNS:-0}"                      # not exported into scripts
+[ "$cols" -gt 0 ] 2>/dev/null || cols="$(tput cols 2>/dev/null || echo 80)"
+
+args=()
+
+accent="$(head -n1 "$STATE/accent" 2>/dev/null || true)"
+if [[ "$accent" =~ ^[0-9a-fA-F]{6}$ ]]; then
+    # Both slots, so the swirl is one colour.
+    rgb="38;2;$((16#${accent:0:2}));$((16#${accent:2:2}));$((16#${accent:4:2}))"
+    args+=(--logo-color-1 "$rgb" --logo-color-2 "$rgb")
+fi
+
+[ "$cols" -lt "$MIN_COLS" ] && args+=(--logo none)
+
+exec fastfetch ${args[@]+"${args[@]}"} "$@"

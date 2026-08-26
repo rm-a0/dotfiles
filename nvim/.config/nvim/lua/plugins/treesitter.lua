@@ -1,0 +1,28 @@
+-- Syntax highlighting, indentation and structural text objects.
+
+return {
+    {
+        "nvim-treesitter/nvim-treesitter",
+        build = ":TSUpdate",
+        opts = {
+            ensure_installed = {
+                "bash", "c", "cpp", "css", "diff", "go", "html",
+                "javascript", "lua", "luadoc", "markdown", "markdown_inline",
+                "php", "python", "rust", "vim", "vimdoc",
+            },
+            auto_install = true,
+            highlight = {
+                enable = true,
+                -- Ruby's indent rules depend on vim's regex highlighting.
+                additional_vim_regex_highlighting = { "ruby" },
+            },
+            indent = { enable = true, disable = { "ruby" } },
+        },
+        config = function(_, opts)
+            -- git tends to be more reliable than curl behind restrictive networks
+            require("nvim-treesitter.install").prefer_git = true
+            ---@diagnostic disable-next-line: missing-fields
+            require("nvim-treesitter.configs").setup(opts)
+        end,
+    },
+}

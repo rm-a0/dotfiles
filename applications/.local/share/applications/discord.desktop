@@ -1,0 +1,18 @@
+# Overrides /usr/share/applications/discord.desktop; delete to restore it.
+#
+# --ozone-platform=x11 because Discord's Wayland backend lays out for a
+# viewport wider than its window on a fractional scale, cutting off the right
+# side in any tiled window. Fractional-scale and device-scale-factor flags do
+# not help. See xwayland:force_zero_scaling in hypr/lua/monitors.lua for the
+# sharpness half.
+[Desktop Entry]
+Type=Application
+Name=Discord
+GenericName=Internet Messenger
+Comment=All-in-one voice and text chat
+Exec=/usr/bin/discord --ozone-platform=x11 %u
+Icon=discord
+Terminal=false
+Categories=Network;InstantMessaging;
+MimeType=x-scheme-handler/discord;
+StartupWMClass=discord

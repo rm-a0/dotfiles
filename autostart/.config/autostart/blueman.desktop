@@ -1,0 +1,8 @@
+# Overrides /etc/xdg/autostart/blueman.desktop; delete to restore it.
+# The bar opens rice-bluetooth instead.
+[Desktop Entry]
+Type=Application
+Name=blueman (disabled by the rice)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

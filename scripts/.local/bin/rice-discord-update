@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# rice-discord-update — install the current Discord .deb.
+#
+# Discord hangs with no window when its version is behind the server's --
+# check ~/.config/discord/modules.log for "Manual update required". Its own
+# updater cannot finish because installing a .deb needs root.
+
+set -euo pipefail
+
+URL="https://discord.com/api/download?platform=linux&format=deb"
+
+command -v curl >/dev/null 2>&1 || { echo "rice-discord-update: curl is required" >&2; exit 1; }
+
+# Temp dir, removed on any exit.
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+installed="$(dpkg-query -W -f='${Version}' discord 2>/dev/null || echo none)"
+echo "installed: $installed"
+
+echo "downloading…"
+curl -fSL --progress-bar "$URL" -o "$tmp/discord.deb"
+
+candidate="$(dpkg-deb -f "$tmp/discord.deb" Version)"
+echo "available: $candidate"
+
+if [ "$installed" = "$candidate" ]; then
+    echo "already current — if Discord still will not open, the problem is elsewhere"
+    exit 0
+fi
+
+# A Vencord-patched install has the original moved aside as _app.asar.
+vencord_was_installed=false
+if compgen -G "$HOME/.config/discord/app-*/resources/_app.asar" >/dev/null; then
+    vencord_was_installed=true
+fi
+
+sudo dpkg -i "$tmp/discord.deb" || sudo apt-get install -f -y
+echo "updated to $candidate"
+
+# The new version ships an unpatched app, so the theme stops applying.
+if [ "$vencord_was_installed" = true ]; then
+    cat <<'NOTE'
+
+Vencord was installed before this update and will not have survived it:
+the new version ships an unpatched app.asar. Re-run the installer to get
+it back --
+
+  curl -sSL --fail -o /tmp/vcinst \
+    https://github.com/Vendicated/VencordInstaller/releases/latest/download/VencordInstallerCli-Linux
+  chmod +x /tmp/vcinst && /tmp/vcinst -install
+
+No sudo needed: the app lives under ~/.config/discord and is yours.
+NOTE
+fi

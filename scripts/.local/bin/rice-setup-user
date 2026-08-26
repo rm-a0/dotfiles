@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# rice-setup-user — install this rice into another account on the same machine.
+#
+#     sudo rice-setup-user <username>
+#
+# The configs are portable; four of their dependencies are not. Handles the
+# Nerd Font (system-wide) and oh-my-zsh/powerlevel10k; reports wallpapers and
+# the login shell, which are yours to decide.
+
+set -euo pipefail
+
+die() { printf 'rice-setup-user: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" -eq 0 ] || die "must run as root (sudo rice-setup-user <user>)"
+[ $# -eq 1 ] || die "usage: sudo rice-setup-user <username>"
+
+TARGET=$1
+getent passwd "$TARGET" >/dev/null || die "no such user: $TARGET"
+
+TARGET_HOME=$(getent passwd "$TARGET" | cut -d: -f6)
+TARGET_SHELL=$(getent passwd "$TARGET" | cut -d: -f7)
+[ -d "$TARGET_HOME" ] || die "no home directory: $TARGET_HOME"
+
+# Where this script is running from, i.e. the repo to copy.
+SELF=$(readlink -f "${BASH_SOURCE[0]}")
+REPO=$(cd "$(dirname "$SELF")/../../.." && pwd)
+[ -f "$REPO/install.sh" ] || die "cannot find the repo (looked in $REPO)"
+SOURCE_HOME=$(dirname "$REPO")
+
+echo "repo:   $REPO"
+echo "target: $TARGET ($TARGET_HOME, shell $TARGET_SHELL)"
+echo
+
+# ── 1. Fonts, system-wide ────────────────────────────────────────────────
+# One system copy, or the second account gets blank boxes.
+FONT_DIR=/usr/local/share/fonts/nerd-fonts
+if ! fc-list -f '%{file}\n' 2>/dev/null | grep -q "^$FONT_DIR"; then
+    src="$SOURCE_HOME/.local/share/fonts"
+    if [ -d "$src" ] && compgen -G "$src/*NerdFont*" >/dev/null; then
+        install -d -m 755 "$FONT_DIR"
+        find "$src" -maxdepth 1 -name '*NerdFont*' -exec install -m 644 {} "$FONT_DIR/" \;
+        fc-cache -f >/dev/null
+        echo "fonts:  installed system-wide -> $FONT_DIR"
+    else
+        echo "fonts:  WARNING no Nerd Font found in $src; glyphs will be blank"
+    fi
+else
+    echo "fonts:  already system-wide"
+fi
+
+# ── 2. The repo ──────────────────────────────────────────────────────────
+DEST="$TARGET_HOME/dotfiles"
+
+# Copy, not clone: a mode-700 home cannot be read through. Refreshed every
+# run, so fixes propagate. Their .git is left alone.
+install -d -o "$TARGET" -g "$TARGET" "$DEST"
+tar -C "$REPO" --exclude=.git --exclude=__pycache__ -cf - . \
+    | tar -C "$DEST" -xf -
+echo "repo:   synced to $DEST"
+
+# Before anything runs as the target: cp -a as root keeps the source owner.
+chown -R "$TARGET:$TARGET" "$DEST"
+
+# A local repo of their own for rollback.
+if [ ! -d "$DEST/.git" ]; then
+    sudo -u "$TARGET" git -C "$DEST" init -q
+    sudo -u "$TARGET" git -C "$DEST" add -A
+    sudo -u "$TARGET" git -C "$DEST" -c user.name=rice -c user.email=rice@localhost \
+        commit -qm "Initial import from $SOURCE_HOME"
+    echo "git:    initialised"
+else
+    echo "git:    already a repo"
+fi
+
+# ── 3. zsh framework ─────────────────────────────────────────────────────
+OMZ="$TARGET_HOME/.oh-my-zsh"
+if [ -d "$OMZ" ]; then
+    echo "omz:    already present"
+else
+    sudo -u "$TARGET" git clone -q --depth 1 \
+        https://github.com/ohmyzsh/ohmyzsh.git "$OMZ" \
+        && echo "omz:    cloned" || echo "omz:    WARNING clone failed (offline?)"
+fi
+P10K="$OMZ/custom/themes/powerlevel10k"
+if [ -d "$P10K" ]; then
+    echo "p10k:   already present"
+elif [ -d "$OMZ" ]; then
+    sudo -u "$TARGET" git clone -q --depth 1 \
+        https://github.com/romkatv/powerlevel10k.git "$P10K" \
+        && echo "p10k:   cloned" || echo "p10k:   WARNING clone failed (offline?)"
+fi
+
+# ── 4. Stow, after checking for collisions ───────────────────────────────
+# Name the conflicting file rather than making them read a stow error.
+# Left by an older install.sh; --ignore means stow will not remove them.
+stale="$TARGET_HOME/.local/lib/rice/__pycache__"
+if [ -e "$stale" ]; then
+    rm -rf "$stale"
+    echo "stale:  removed $stale"
+fi
+
+echo
+echo "checking for conflicts…"
+if ! conflicts=$(cd "$DEST" && sudo -u "$TARGET" stow --no-folding --simulate \
+        --target="$TARGET_HOME" -R $(find . -maxdepth 1 -mindepth 1 -type d \
+        -not -name '.git' -printf '%f\n' | sort) 2>&1); then
+    echo "$conflicts" | sed 's/^/  /'
+    die "existing files are in the way; move or delete them and re-run"
+fi
+echo "  none"
+
+echo
+sudo -u "$TARGET" env HOME="$TARGET_HOME" "$DEST/install.sh"
+
+# ── 5. What is left ──────────────────────────────────────────────────────
+echo
+echo "remaining, by hand:"
+[ "$TARGET_SHELL" = "$(command -v zsh)" ] \
+    || echo "  * login shell is $TARGET_SHELL; for the zsh config: chsh -s $(command -v zsh) $TARGET"
+if ! sudo -u "$TARGET" test -d "$TARGET_HOME/Pictures/wallpapers" \
+   || [ -z "$(sudo -u "$TARGET" ls -A "$TARGET_HOME/Pictures/wallpapers" 2>/dev/null)" ]; then
+    echo "  * no wallpapers in $TARGET_HOME/Pictures/wallpapers -- rice-wallpaper needs at least one"
+fi
+echo "  * Discord/Vencord is per-user; re-run the Vencord installer as $TARGET if wanted"

@@ -1,0 +1,39 @@
+# zathura — https://pwmt.org/projects/zathura/
+# Catppuccin Mocha. The accent comes from a file rice-accent generates.
+
+include accent
+
+set font                        "JetBrainsMono Nerd Font Mono 10"
+set selection-clipboard         clipboard
+set statusbar-home-tilde        true
+set window-title-basename       true
+set adjust-open                 width
+set scroll-step                 80
+set guioptions                  ""
+
+# ── Chrome ───────────────────────────────────────────────────────────────
+set default-bg                  "#1e1e2e"
+set default-fg                  "#cdd6f4"
+set statusbar-bg                "#181825"
+set statusbar-fg                "#bac2de"
+set inputbar-bg                 "#1e1e2e"
+set inputbar-fg                 "#cdd6f4"
+set notification-bg             "#1e1e2e"
+set notification-fg             "#cdd6f4"
+set notification-error-bg       "#1e1e2e"
+set notification-error-fg       "#f38ba8"
+set notification-warning-bg     "#1e1e2e"
+set notification-warning-fg     "#f9e2af"
+set completion-bg               "#313244"
+set completion-fg               "#cdd6f4"
+set completion-group-bg         "#1e1e2e"
+set completion-group-fg         "#6c7086"
+
+# ── Recolouring ──────────────────────────────────────────────────────────
+# On by default; `r` toggles it for documents where colour matters.
+set recolor                     true
+set recolor-keephue             true
+set recolor-lightcolor          "#1e1e2e"
+set recolor-darkcolor           "#cdd6f4"
+
+map r recolor

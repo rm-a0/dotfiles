@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# rice-mime — file-type associations that the distribution gets wrong here.
+#
+# Not stowed: apps write to mimeapps.list themselves. xdg-mime merges rather
+# than replacing, so hand-set associations survive.
+
+set -euo pipefail
+command -v xdg-mime >/dev/null 2>&1 || { echo "xdg-mime not found"; exit 0; }
+
+# Debian points png/jpeg/gif at ImageMagick's X11 `display` while webp/svg
+# go to Loupe.
+IMAGES=(
+    image/png image/jpeg image/gif image/bmp image/tiff
+    image/webp image/svg+xml image/avif image/heif image/x-icon
+)
+
+set_default() {
+    local app=$1; shift
+    # A missing .desktop gets recorded anyway and breaks the association.
+    if [ ! -e "/usr/share/applications/$app" ]; then
+        echo "skip: $app not installed"
+        return
+    fi
+    xdg-mime default "$app" "$@"
+    echo "$app  <-  $*"
+}
+
+set_default org.gnome.Loupe.desktop "${IMAGES[@]}"
+
+# PDFs default to LibreOffice Draw, which reflows the layout.
+set_default org.pwmt.zathura.desktop application/pdf application/postscript
+
+echo "mime defaults applied"

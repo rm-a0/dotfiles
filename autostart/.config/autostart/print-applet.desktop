@@ -1,0 +1,8 @@
+# Overrides /etc/xdg/autostart/print-applet.desktop; delete to restore it.
+# Tray icon for print jobs. Printing itself is unaffected.
+[Desktop Entry]
+Type=Application
+Name=Print queue applet (disabled by the rice)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

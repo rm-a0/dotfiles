@@ -1,0 +1,179 @@
+// -*- mode: jsonc -*-
+// https://github.com/Alexays/Waybar/wiki/Configuration
+//
+// Layout is three transparent groups; each MODULE draws its own pill.
+// See style.css for the rules that keep those pills aligned.
+{
+    "layer":    "top",
+    "position": "top",
+    "height":   34,
+    "margin-top":    6,
+    "margin-left":   8,
+    "margin-right":  8,
+    "spacing":  0,
+
+    "modules-left":   ["hyprland/workspaces", "hyprland/window"],
+    "modules-center": ["clock"],
+    "modules-right":  ["mpris", "tray", "idle_inhibitor", "power-profiles-daemon",
+                       "pulseaudio", "backlight", "bluetooth", "network", "cpu",
+                       "battery", "custom/power"],
+
+    "hyprland/workspaces": {
+        "format": "{icon}",
+        "format-icons": {
+            "default": "",
+            "active":  "",
+            "urgent":  "",
+            "empty":   ""
+        },
+        "on-click": "activate",
+        "on-scroll-up":   "hyprctl dispatch workspace e+1",
+        "on-scroll-down": "hyprctl dispatch workspace e-1",
+        "persistent-workspaces": { "*": 5 }
+    },
+
+    "hyprland/window": {
+        "format":    "{title}",
+        "max-length": 32,
+        // On an empty workspace this module would render an empty pill;
+        // the `window#waybar.empty` rule in style.css hides it instead.
+        "separate-outputs": true
+    },
+
+    "clock": {
+        "format":        "  {:%H:%M}",
+        "format-alt":    "  {:%a %d %b}",
+        "tooltip-format": "<tt><small>{calendar}</small></tt>",
+        "calendar": {
+            "mode":          "month",
+            "weeks-pos":     "right",
+            "on-scroll":     1,
+            "format": {
+                "months":  "<span color='#cba6f7'><b>{}</b></span>",
+                "days":    "<span color='#cdd6f4'>{}</span>",
+                "weeks":   "<span color='#94e2d5'><b>W{}</b></span>",
+                "weekdays":"<span color='#f9e2af'><b>{}</b></span>",
+                "today":   "<span color='#f38ba8'><b><u>{}</u></b></span>"
+            }
+        },
+        "actions": {
+            "on-click-right":  "mode",
+            "on-scroll-up":    "shift_up",
+            "on-scroll-down":  "shift_down"
+        }
+    },
+
+    "tray": {
+        "icon-size": 14,
+        "spacing":   10,
+        "show-passive-items": true
+    },
+
+    "idle_inhibitor": {
+        "format": "{icon}",
+        "format-icons": { "activated": "", "deactivated": "" },
+        "tooltip-format-activated":   "Idle inhibited — screen stays on",
+        "tooltip-format-deactivated": "Idle timers active"
+    },
+
+    "pulseaudio": {
+        "format":       "{icon}  {volume}%",
+        "format-muted": "  muted",
+        "format-icons": { "default": ["", "", ""] },
+        "on-click":        "rice-audio",
+        "on-click-right":  "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle",
+        "on-click-middle": "pavucontrol",
+        "on-scroll-up":    "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+",
+        "on-scroll-down":  "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-",
+        "tooltip-format":  "{desc} — {volume}%"
+    },
+
+    "bluetooth": {
+        "format":           "",
+        // All bluetooth states share one glyph; style.css dims .off and
+        // .disabled to @overlay1. An empty string collapses the entire pill,
+        // which reads as the module vanishing rather than bluetooth being off.
+        "format-disabled":  "\uf293",
+        "format-off":       "\uf293",
+        "format-connected": "  {num_connections}",
+        "on-click":         "rice-bluetooth",
+        "on-click-right":   "blueman-manager",
+        "tooltip-format":            "{controller_alias}\n{status}",
+        "tooltip-format-connected":  "{controller_alias}\n\n{device_enumerate}",
+        "tooltip-format-enumerate-connected": "{device_alias}"
+    },
+
+    "network": {
+        "format-wifi":         "  {signalStrength}%",
+        "format-ethernet":     "  wired",
+        "format-linked":       "  no IP",
+        "format-disconnected": "  offline",
+        "tooltip-format-wifi": "{essid}\n{ipaddr}/{cidr}\n{bandwidthDownBits} ↓  {bandwidthUpBits} ↑",
+        "tooltip-format-ethernet": "{ifname}\n{ipaddr}/{cidr}",
+        "on-click":       "rice-wifi",
+        "on-click-right": "nm-connection-editor",
+        "interval": 5
+    },
+
+    "cpu":    { "format": "  {usage}%",      "interval": 5, "tooltip": false },
+    "memory": { "format": "  {percentage}%", "interval": 5,
+                "tooltip-format": "{used:0.1f}G / {total:0.1f}G" },
+
+    "battery": {
+        "states":          { "warning": 30, "critical": 15 },
+        "format":          "{icon}  {capacity}%",
+        "format-charging": "  {capacity}%",
+        "format-plugged":  "  {capacity}%",
+        "format-icons":    ["", "", "", "", ""],
+        "tooltip-format":  "{timeTo}\n{power:0.1f} W",
+        "on-click":        "rice-battery"
+    },
+
+    "mpris": {
+        "format":        "{player_icon}  {dynamic}",
+        "format-paused": "{status_icon}  <i>{dynamic}</i>",
+        "format-stopped": "",
+        "dynamic-order": ["title", "artist"],
+        "dynamic-len":   26,
+        "interval":      2,
+        // Nerd Font: f001 music, f03d video, f269 firefox, f04c pause
+        "player-icons":  { "default": "\uf001", "mpv": "\uf03d", "firefox": "\uf269" },
+        "status-icons":  { "paused": "\uf04c" },
+        "ignored-players": ["firefox"],
+        "on-click":       "playerctl play-pause",
+        "on-click-right": "playerctl next",
+        "on-scroll-up":   "playerctl volume 0.05+",
+        "on-scroll-down": "playerctl volume 0.05-",
+        "tooltip-format": "{player}\n{title}\n{artist}"
+    },
+
+    "backlight": {
+        // Nerd Font f185 sun, f186 moon-o for the dimmest step
+        "format":       "{icon}  {percent}%",
+        "format-icons": ["\uf186", "\uf185"],
+        "tooltip-format": "Brightness {percent}%",
+        "on-click":       "rice-brightness",
+        "on-scroll-up":   "brightnessctl -q set 5%+",
+        "on-scroll-down": "brightnessctl -q set 5%-"
+    },
+
+    "power-profiles-daemon": {
+        "format":         "{icon}",
+        "tooltip":        true,
+        "tooltip-format": "Power profile: {profile}\nDriver: {driver}",
+        "on-click":       "rice-battery",
+        // Nerd Font: f0e7 bolt, f135 rocket, f24e scales, f06c leaf
+        "format-icons": {
+            "default":     "\uf0e7",
+            "performance": "\uf135",
+            "balanced":    "\uf24e",
+            "power-saver": "\uf06c"
+        }
+    },
+
+    "custom/power": {
+        "format":   "",
+        "on-click": "wlogout -p layer-shell -b 5",
+        "tooltip":  false
+    }
+}

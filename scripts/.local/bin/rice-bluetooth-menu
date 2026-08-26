@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# rice-bluetooth-menu — text fallback for rice-bluetooth (fuzzel dropdown).
+# Used when GtkLayerShell is unavailable; rice-bluetooth is the GTK panel.
+# blueman-manager stays available under "Settings" for pairing new devices.
+
+set -euo pipefail
+
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+# shellcheck source=/dev/null
+source "$(dirname "$(dirname "$SELF")")/lib/rice/menu.sh"
+
+rice_toggle_guard
+
+I_BT=$(printf '\uf293')      # nf-fa-bluetooth
+I_ON=$(printf '\uf00c')      # nf-fa-check
+I_OFF=$(printf '\uf05e')     # nf-fa-ban
+I_SCAN=$(printf '\uf021')    # nf-fa-refresh
+I_COG=$(printf '\uf013')     # nf-fa-cog
+
+command -v bluetoothctl >/dev/null 2>&1 || {
+    rice_notify "Bluetooth" "bluetoothctl not installed"; exit 1
+}
+
+powered="$(bluetoothctl show 2>/dev/null | awk '/Powered:/ {print $2; exit}')"
+
+if [ "$powered" != "yes" ]; then
+    choice="$(printf '%s\n' "$I_BT  Turn Bluetooth on" "$I_COG  Settings…" | rice_menu "Bluetooth (off)" 2)" || exit 0
+    case "$choice" in
+        *"Turn Bluetooth on") bluetoothctl power on >/dev/null 2>&1 && rice_notify "Bluetooth" "Enabled" ;;
+        *"Settings…")         setsid blueman-manager >/dev/null 2>&1 & ;;
+    esac
+    exit 0
+fi
+
+# Connected devices first, then the rest of the known ones.
+mapfile -t connected < <(bluetoothctl devices Connected 2>/dev/null | cut -d' ' -f2-)
+declare -A is_connected=()
+for d in "${connected[@]}"; do is_connected["${d%% *}"]=1; done
+
+entries=()
+declare -A mac_of=()
+while read -r mac name; do
+    [ -n "$mac" ] || continue
+    mark="  "; [ -n "${is_connected[$mac]:-}" ] && mark="$I_ON"
+    label="$(printf '%s %s  %s' "$mark" "$I_BT" "$name")"
+    entries+=("$label")
+    mac_of["$label"]="$mac"
+done < <(bluetoothctl devices 2>/dev/null | sed 's/^Device //')
+
+entries+=("$I_SCAN  Scan for devices" "$I_OFF  Turn Bluetooth off" "$I_COG  Settings…")
+
+choice="$(printf '%s\n' "${entries[@]}" | rice_menu "Bluetooth" 12 44)" || exit 0
+[ -n "$choice" ] || exit 0
+
+case "$choice" in
+    *"Scan for devices")
+        rice_notify "Bluetooth" "Scanning for 8s…"
+        # scan on/off around a sleep; bluetoothctl --timeout keeps it non-interactive
+        bluetoothctl --timeout 8 scan on >/dev/null 2>&1 || true
+        exec "$SELF"
+        ;;
+    *"Turn Bluetooth off")
+        bluetoothctl power off >/dev/null 2>&1 && rice_notify "Bluetooth" "Disabled"
+        ;;
+    *"Settings…")
+        setsid blueman-manager >/dev/null 2>&1 &
+        ;;
+    *)
+        mac="${mac_of[$choice]:-}"
+        [ -n "$mac" ] || exit 0
+        name="${choice#*"$I_BT"  }"
+
+        if [ -n "${is_connected[$mac]:-}" ]; then
+            if bluetoothctl disconnect "$mac" >/dev/null 2>&1; then
+                rice_notify "Bluetooth" "Disconnected" "$name"
+            else
+                rice_notify "Bluetooth" "Failed to disconnect" "$name"
+            fi
+        else
+            rice_notify "Bluetooth" "Connecting…" "$name"
+            if bluetoothctl connect "$mac" >/dev/null 2>&1; then
+                rice_notify "Bluetooth" "Connected" "$name"
+            else
+                rice_notify "Bluetooth" "Failed to connect" "$name"
+            fi
+        fi
+        ;;
+esac

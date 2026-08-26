@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# rice-screenshot — capture to ~/Pictures/screenshots and to the clipboard.
+#
+#   rice-screenshot region   select an area (default)
+#   rice-screenshot screen   the whole output
+#   rice-screenshot window   the focused window
+#
+# No jq: hyprctl's plain-text output is parsed with awk.
+
+set -euo pipefail
+
+DIR="${RICE_SCREENSHOT_DIR:-$HOME/Pictures/screenshots}"
+mkdir -p "$DIR"
+FILE="$DIR/$(date +%Y-%m-%d_%H-%M-%S).png"
+
+notify() {
+    command -v notify-send >/dev/null 2>&1 &&
+        notify-send -a "Screenshot" -i "$FILE" "Screenshot" "$1" || true
+}
+
+active_window_geometry() {
+    hyprctl activewindow | awk '
+        /^[[:space:]]*at:/   { split($2, a, ","); x = a[1]; y = a[2] }
+        /^[[:space:]]*size:/ { split($2, s, ","); w = s[1]; h = s[2] }
+        END { if (w != "" && h != "") printf "%d,%d %dx%d", x, y, w, h }
+    '
+}
+
+case "${1:-region}" in
+    region)
+        geom="$(slurp -d)" || exit 0        # empty on Esc — not an error
+        [ -n "$geom" ] || exit 0
+        grim -g "$geom" "$FILE"
+        ;;
+    screen)
+        grim "$FILE"
+        ;;
+    window)
+        geom="$(active_window_geometry)"
+        [ -n "$geom" ] || { printf 'rice-screenshot: no focused window\n' >&2; exit 1; }
+        grim -g "$geom" "$FILE"
+        ;;
+    *)
+        printf 'usage: rice-screenshot [region|screen|window]\n' >&2
+        exit 1
+        ;;
+esac
+
+wl-copy < "$FILE"
+notify "Saved to ${FILE/#$HOME/\~} and copied"

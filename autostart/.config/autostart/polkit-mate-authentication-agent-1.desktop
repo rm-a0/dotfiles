@@ -1,0 +1,9 @@
+# Overrides /etc/xdg/autostart/polkit-mate-authentication-agent-1.desktop; delete to restore it.
+# NOT disabled -- hypr/lua/autostart.lua launches it. Both were racing
+# to register with polkitd.
+[Desktop Entry]
+Type=Application
+Name=polkit-mate agent (launched from autostart.lua instead)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

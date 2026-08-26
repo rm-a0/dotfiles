@@ -1,0 +1,8 @@
+# Overrides /etc/xdg/autostart/org.gnome.Evolution-alarm-notify.desktop; delete to restore it.
+# Calendar reminders for an unused mail client.
+[Desktop Entry]
+Type=Application
+Name=Evolution reminders (disabled by the rice)
+Exec=/bin/true
+Hidden=true
+X-GNOME-Autostart-enabled=false

@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""rice-brightness — backlight slider.
+
+brightnessctl writes via systemd-logind, so no root or udev rule needed.
+"""
+
+import os
+import sys
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"),
+)
+
+from rice.panel import RicePanel, run, run_cmd  # noqa: E402
+
+I_SUN = "\uf185"           # nf-fa-sun_o
+
+# Below ~5% the panel is effectively off, with no way to see it again.
+MINIMUM = 5
+
+
+def backlights():
+    """[(name, percent)], ignoring keyboard and LAN LEDs."""
+    out = run_cmd("brightnessctl", "-m", "-l")
+    found = []
+    for line in out.splitlines():
+        parts = line.split(",")
+        if len(parts) >= 5 and parts[1] == "backlight":
+            try:
+                current, maximum = int(parts[2]), int(parts[4])
+            except ValueError:
+                continue
+            pct = int(round(current / maximum * 100)) if maximum else 0
+            found.append((parts[0], pct))
+    return found
+
+
+def set_brightness(device, percent):
+    run_cmd("brightnessctl", "-d", device, "-q", "set", f"{max(percent, MINIMUM)}%")
+
+
+class BrightnessPanel(RicePanel):
+    NAME = "rice-brightness"
+
+    def build(self, box):
+        self.header(box, I_SUN, "Brightness")
+
+        devices = backlights()
+        if not devices:
+            self.info_row(box, "no backlight device found", "", dim=True)
+            self.separator(box)
+            self.settings_button(box, "Display settings",
+                                 ["gnome-control-center", "display"])
+            return
+
+        for index, (device, pct) in enumerate(devices):
+            if index:
+                self.separator(box)
+            # The header already says it when there is only one.
+            if len(devices) > 1:
+                self.heading(box, device.upper())
+
+            def on_change(value, label, device=device):
+                value = max(value, MINIMUM)
+                label.set_text(f"{value:3d}%")
+                set_brightness(device, value)
+
+            _, scale, _ = self.slider_row(box, I_SUN, pct, on_change)
+            # Don't let it be dragged to black.
+            scale.set_range(MINIMUM, 100)
+            scale.set_value(max(pct, MINIMUM))
+
+        self.separator(box)
+        self.settings_button(box, "Display settings",
+                             ["gnome-control-center", "display"])
+
+
+if __name__ == "__main__":
+    run(BrightnessPanel)
