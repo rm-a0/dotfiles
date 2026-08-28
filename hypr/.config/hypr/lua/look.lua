@@ -9,7 +9,9 @@ hl.config({
     general = {
         -- Logical pixels: at scale 1.5 these cost double.
         gaps_in  = 4,
-        gaps_out = 8,
+        -- top right bottom left: the bar already reserves its own strip, so a
+        -- full gap above the first window reads as a second margin.
+        gaps_out = { top = 3, right = 8, bottom = 8, left = 8 },
 
         border_size = 2,
 

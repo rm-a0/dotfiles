@@ -3,13 +3,13 @@
  * install.sh seeds it, so it is always present even with auto-accent off. */
 @import url("accent.css");
 
-/* Bar height 34 = 24px pill + 5px margin top/bottom.
+/* Bar height 38 = 30px pill + 4px margin top/bottom.
  * All pill geometry comes from the one shared selector list below --
  * per-module margins end up a pixel off. */
 
 * {
     font-family: "JetBrainsMono Nerd Font Mono", monospace;
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 500;
     min-height: 0;
     min-width: 0;
@@ -52,8 +52,8 @@ window#waybar {
     background-color: alpha(@base, 0.78);
     color: @subtext1;
     border: 1px solid alpha(@surface0, 0.9);
-    border-radius: 11px;
-    margin: 5px 3px;
+    border-radius: 15px;   /* half the 30px pill height, so it stays a pill */
+    margin: 4px 3px;
     padding: 0 11px;
 }
 
@@ -70,8 +70,8 @@ window#waybar {
     color: @overlay1;
     background: transparent;
     border: none;
-    border-radius: 8px;
-    margin: 2px 1px;
+    border-radius: 11px;
+    margin: 3px 1px;
     padding: 0 7px;
     box-shadow: none;
     text-shadow: none;

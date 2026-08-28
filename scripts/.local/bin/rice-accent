@@ -16,6 +16,7 @@ tracked file is ever rewritten.
     Hyprland border   ~/.local/state/rice/accent      lua/theme.lua
     rice-* panels     ~/.local/state/rice/accent      panel.py
     Discord/Vencord   Vencord/themes/                 rice-discord-theme
+    Chromium          rice/chromium-theme/            rice-chromium-theme
 
 Where the format has variables (CSS, hyprlang) the fragment defines them.
 Where it does not (mako, fuzzel, zathura), it owns those keys outright --
@@ -183,6 +184,10 @@ def reload_all():
     # Swaps a file rather than rewriting a colour, and hits the network --
     # hence last. No-op unless the nearest accent changed.
     subprocess.run(["rice-discord-theme"], capture_output=True)
+
+    # Chromium re-reads an unpacked extension only when it restarts, so this
+    # cannot take effect live -- writing it now means the next launch is right.
+    subprocess.run(["rice-chromium-theme"], capture_output=True)
 
 
 def apply(accent, alt):

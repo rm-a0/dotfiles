@@ -59,6 +59,13 @@ alias shot='rice-screenshot'
 # Reload the whole desktop after editing dotfiles.
 alias rice-reload='hyprctl reload && systemctl --user restart waybar mako && echo "rice reloaded"'
 
+# ── bw-migrator-mcp ─────────────────────────────────────────────────────
+# Run the local server the way `make run` would, minus the pip3 prereq that
+# isn't installed here. --env-file .env loads the bare vars (DATABRICKS_CONFIG_PROFILE
+# etc.) that pydantic-settings otherwise keeps to itself, so the agent's Databricks
+# model client authenticates. Serves on http://localhost:9000 (BW_MIGRATOR_CORE_PORT).
+bwrun() { ( cd ~/dev/work/bw-migrator-mcp && uv run --env-file .env python -m bw_migrator_server.main ) }
+
 # ── Powerlevel10k ────────────────────────────────────────────────────────
 # Run `p10k configure` to regenerate.
 [[ -f ~/.p10k.zsh ]] && source ~/.p10k.zsh

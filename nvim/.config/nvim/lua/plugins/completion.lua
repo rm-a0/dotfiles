@@ -42,6 +42,26 @@ return {
                     ["<C-y>"] = cmp.mapping.confirm({ select = true }),
                     ["<C-Space>"] = cmp.mapping.complete({}),
 
+                    -- VSCode-style accept. <CR> only confirms an explicitly
+                    -- highlighted item, so it still breaks the line otherwise.
+                    ["<CR>"] = cmp.mapping.confirm({ select = false }),
+                    ["<Tab>"] = cmp.mapping(function(fallback)
+                        if cmp.visible() then
+                            cmp.confirm({ select = true })
+                        elseif luasnip.expand_or_locally_jumpable() then
+                            luasnip.expand_or_jump()
+                        else
+                            fallback()
+                        end
+                    end, { "i", "s" }),
+                    ["<S-Tab>"] = cmp.mapping(function(fallback)
+                        if luasnip.locally_jumpable(-1) then
+                            luasnip.jump(-1)
+                        else
+                            fallback()
+                        end
+                    end, { "i", "s" }),
+
                     -- <C-l> / <C-h> step forward and back through the
                     -- placeholders of an expanded snippet.
                     ["<C-l>"] = cmp.mapping(function()

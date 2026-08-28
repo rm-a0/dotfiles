@@ -34,6 +34,7 @@ return {
                 { "<leader>g", group = "[G]it" },
                 { "<leader>b", group = "[B]uffer" },
                 { "<leader>h", group = "Git [H]unk", mode = { "n", "v" } },
+                { "<leader>x", group = "Diagnostics (Trouble)" },
             })
         end,
     },

@@ -1,0 +1,8 @@
+#!/bin/sh
+# Brave with the generated theme loaded. rice-chromium-theme writes an
+# unpacked extension, and an unpacked extension is per-profile unless it is
+# passed on the command line -- a .desktop Exec cannot expand $HOME, so the
+# path is resolved here instead.
+exec brave-browser-stable \
+    --load-extension="${XDG_DATA_HOME:-$HOME/.local/share}/rice/chromium-theme" \
+    "$@"

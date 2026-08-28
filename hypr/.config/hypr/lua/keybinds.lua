@@ -6,7 +6,7 @@ local mod = "SUPER"
 local apps = {
     terminal    = "kitty",
     fileManager = "nautilus",
-    browser     = "chromium",
+    browser     = "rice-brave",
     menu        = "fuzzel",
     clipboard   = 'cliphist list | fuzzel --dmenu --prompt "clip> " | cliphist decode | wl-copy',
 }

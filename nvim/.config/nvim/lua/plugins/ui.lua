@@ -25,15 +25,42 @@ return {
             { "nvim-tree/nvim-web-devicons", enabled = vim.g.have_nerd_font },
             "MunifTanjim/nui.nvim",
         },
+        cmd = "Neotree",
+        -- <C-b> pairs with the <C-j> terminal above. Normal-mode <C-b> is
+        -- page-back, covered by <C-u>; cmp's is insert-mode only.
         keys = {
+            { "<C-b>", "<cmd>Neotree toggle<CR>", desc = "[T]oggle [E]xplorer" },
             { "<leader>te", "<cmd>Neotree toggle<CR>", desc = "[T]oggle [E]xplorer" },
         },
         opts = {
             filesystem = {
                 follow_current_file = { enabled = true },
                 hijack_netrw_behavior = "open_current",
+
+                -- Default hides both. visible=true dims them instead, via
+                -- NeoTreeGitIgnored/NeoTreeDotfile.
+                filtered_items = {
+                    visible = true,
+                    hide_dotfiles = false,
+                    hide_gitignored = false,
+                    never_show = { ".git", "__pycache__", ".DS_Store" },
+                },
+
+                -- Without this the tree only refreshes on focus.
+                use_libuv_file_watcher = true,
             },
-            window = { width = 30 },
+            window = {
+                width = 30,
+                mappings = {
+                    -- <LeftRelease>, not <LeftMouse>: the cursor has moved
+                    -- by the time the button comes up.
+                    ["<LeftRelease>"] = "open",
+
+                    -- neo-tree binds <C-b> to scroll_preview buffer-locally,
+                    -- which shadows the global toggle inside the tree.
+                    ["<C-b>"] = "close_window",
+                },
+            },
         },
     },
 
@@ -62,7 +89,12 @@ return {
         keys = {
             { "<S-l>", "<cmd>BufferLineCycleNext<CR>", desc = "Next buffer tab" },
             { "<S-h>", "<cmd>BufferLineCyclePrev<CR>", desc = "Previous buffer tab" },
-            { "<leader>bd", "<cmd>bdelete<CR>", desc = "[B]uffer [D]elete" },
+            -- :bdelete closes the window too, tearing down splits.
+            {
+                "<leader>bd",
+                function() require("mini.bufremove").delete(0, false) end,
+                desc = "[B]uffer [D]elete",
+            },
         },
     },
 }

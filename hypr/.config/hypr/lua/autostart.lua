@@ -4,7 +4,10 @@
 -- Only things without a unit belong here.
 
 hl.on("hyprland.start", function()
-    hl.exec_cmd("/usr/libexec/polkit-mate-authentication-agent-1")
+    -- No polkit agent here: hyprpolkitagent ships with hyprland as an
+    -- enabled user unit. Anything launched from this hook raced it to
+    -- polkitd, and the loser exits with "an authentication agent already
+    -- exists" and lingers as a dead process.
 
     -- cliphist only holds what these watchers record.
     hl.exec_cmd("wl-paste --type text  --watch cliphist store")
