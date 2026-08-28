@@ -91,7 +91,7 @@ hl.bind("SHIFT + Print",       hl.dsp.exec_cmd("rice-screenshot screen"), { desc
 hl.bind(mod .. " + Print",     hl.dsp.exec_cmd("rice-screenshot window"), { desc = "Screenshot window" })
 
 -- ── Wallpaper ────────────────────────────────────────────────────────────
-hl.bind(mod .. " + W",         hl.dsp.exec_cmd("rice-wallpaper menu"),   { desc = "Wallpaper picker" })
+hl.bind(mod .. " + W",         hl.dsp.exec_cmd("rice-wallpaper gallery"), { desc = "Wallpaper gallery" })
 hl.bind(mod .. " + SHIFT + W", hl.dsp.exec_cmd("rice-wallpaper random"), { desc = "Random wallpaper" })
 
 -- ── Hardware keys ────────────────────────────────────────────────────────

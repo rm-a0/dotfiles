@@ -3,7 +3,8 @@
 -- ── Layer surfaces ───────────────────────────────────────────────────────
 -- ignore_alpha keeps blur out of transparent regions, so waybar reads as
 -- separate pills rather than one smeared bar.
-for _, ns in ipairs({ "waybar", "notifications", "launcher", "logout_dialog", "rice-panel" }) do
+for _, ns in ipairs({ "waybar", "notifications", "launcher", "logout_dialog", "rice-panel",
+                      "rice-gallery" }) do
     hl.layer_rule({
         name         = "blur-" .. ns,
         match        = { namespace = "^" .. ns .. "$" },

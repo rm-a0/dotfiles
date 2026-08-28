@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""rice-wallpaper-gallery — coverflow picker for rice-wallpaper.
+
+A fullscreen layer-shell overlay: the wallpapers on a carousel, the selected
+one facing the viewer and the rest rotated away from it. Enter hands the
+choice to `rice-wallpaper set`, which stays the only thing that touches the
+symlink.
+
+Wallpapers are decoded to the size they are drawn and cached under
+$XDG_CACHE_HOME/rice/wallpaper-thumbs, keyed by path, mtime and that size,
+so only a changed directory pays for decoding. They load center-out on
+background threads, a window of them at a time; the carousel is usable
+before they arrive.
+
+    left/right  h l   browse          enter space  apply
+    home end          first / last    esc q        close
+    scroll            browse          click        select, then apply
+"""
+
+import cairo
+import collections
+import hashlib
+import json
+import math
+import os
+import pathlib
+import queue
+import subprocess
+import sys
+import threading
+import time
+
+import gi
+
+gi.require_version("GdkPixbuf", "2.0")
+
+sys.path.insert(
+    0,
+    os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"),
+)
+
+from rice.panel import (  # noqa: E402
+    HAVE_LAYER_SHELL,
+    accent_colour,
+    focused_monitor,
+    notify,
+    run_cmd,
+    toggle_guard,
+)
+from gi.repository import Gdk, GdkPixbuf, GLib, Gtk  # noqa: E402
+
+if HAVE_LAYER_SHELL:
+    from gi.repository import GtkLayerShell
+
+NAME = "rice-wallpaper-gallery"
+
+# ── Carousel geometry ───────────────────────────────────────────────────
+# One camera at FOCAL from the front plane; everything below is in pixels
+# on that plane, so a card at rest draws 1:1 and the projection does the
+# rest. Fractions are of the drawing area.
+CARD_H_FRAC = 0.60       # card box height
+CARD_W_FRAC = 0.40       # card box width -- images fit inside the box
+CENTER_Y = 0.45          # eye line
+SPACING = 0.17           # x per card, in box widths
+GAP = 0.29               # extra room either side of the front card
+REACH = 5.5              # cards either side before the strip stops widening
+DEPTH = 0.34             # how far back the side cards sit, as a fraction
+MAX_ANGLE = math.radians(62)
+SPREAD = 1.7             # how fast a card reaches full rotation
+FOCAL = 1000.0
+EASE = 0.28              # per frame, toward the selection
+
+VISIBLE = 6              # cards each side of the selection that get drawn
+
+# A vertical-axis rotation scales y by a function of x, which no affine
+# transform does; the card is drawn as strips instead. Strips are stepped
+# in source space, which is where the foreshortening comes from, and each
+# card is clipped to its projected quad first -- so the staircase the
+# strips would leave along the top and bottom edges is cut off and only a
+# sub-pixel step inside the image survives.
+#
+# Their count comes from that step, not from the card's width: a card
+# square to the camera needs exactly one, and one deep in the stack is
+# mostly hidden behind its neighbours, so its tolerance grows with the
+# distance. Costing them by width instead spent a third of the frame on
+# the front card, the one strip that is provably exact.
+STEP_PX = 4.0
+MAX_SLICES = 96
+
+# The source is already close to its drawn size, so cairo's GOOD -- a box
+# filter over the whole footprint -- costs 3x a frame for no visible gain.
+# FAST while a glide is in flight, since nothing is still long enough to
+# look at.
+FILTER_MOVING = cairo.Filter.FAST
+FILTER_STILL = cairo.Filter.BILINEAR
+
+KEEP = VISIBLE + 3       # cards each side of the selection kept decoded
+WORKERS = 3
+
+CSS = """
+window {
+    background-color: rgba(17, 17, 27, 0.62);
+    font-family: "JetBrainsMono Nerd Font Mono", monospace;
+    color: #cdd6f4;
+}
+.footer { padding: 0 0 78px 0; }
+.name { font-size: 15px; font-weight: 600; color: #cdd6f4; }
+.meta { font-size: 11px; color: #6c7086; letter-spacing: 1px; }
+.hint { font-size: 11px; color: #45475a; letter-spacing: 1px; }
+"""
+
+
+# Where one card lands on screen this frame. `scale` maps a point on the
+# card's horizontal axis to its screen x and its vertical scale.
+Projection = collections.namedtuple(
+    "Projection", "quad scale half_w half_h cy t slices"
+)
+
+
+def oversample():
+    """Pixels the output really has per logical pixel. Read once.
+
+    GTK3 cannot scale fractionally, so Hyprland asks it for the next whole
+    number up -- 2 on a 1.25 output -- and downscales the result. Decoding
+    to that 2x is detail the screen throws away, so ask the compositor
+    what the ratio actually is. It shells out, so it is not per frame.
+    """
+    try:
+        monitors = json.loads(run_cmd("hyprctl", "-j", "monitors") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        return 1.0
+    focused = next((m for m in monitors if m.get("focused")), None)
+    if focused and focused.get("scale"):
+        return float(focused["scale"])
+    return 1.0
+
+
+def rgba(hexcolour, alpha=1.0):
+    h = hexcolour.lstrip("#")
+    return (
+        int(h[0:2], 16) / 255,
+        int(h[2:4], 16) / 255,
+        int(h[4:6], 16) / 255,
+        alpha,
+    )
+
+
+class Card:
+    __slots__ = ("path", "name", "surface", "width", "height")
+
+    def __init__(self, path):
+        self.path = path
+        self.name = os.path.splitext(os.path.basename(path))[0]
+        self.surface = None                       # decoded at its drawn size
+        self.width = 0                            # source pixels, once known
+        self.height = 0
+
+    @property
+    def aspect(self):
+        if self.width and self.height:
+            return self.width / self.height
+        return 16 / 9                             # until the header is read
+
+
+class Thumbnails:
+    """Wallpapers decoded at the size they are drawn, a window at a time.
+
+    Decoding straight to the card's size is both halves of the problem:
+    the strips then paint at 1:1 in device pixels instead of resampling a
+    generic thumbnail, and nothing holds a surface larger than what is on
+    screen. Only KEEP cards either side of the selection stay decoded --
+    a directory of 200 4K wallpapers would otherwise spend its cold start
+    on images nobody has scrolled to, and a gigabyte holding them.
+    """
+
+    STALE = 30 * 86400
+
+    def __init__(self, cards, on_ready):
+        cache = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+        self.dir = pathlib.Path(cache) / "rice" / "wallpaper-thumbs"
+        self.cards = cards
+        self.on_ready = on_ready
+        self.queue = queue.SimpleQueue()
+        self.pending = set()
+        for _ in range(WORKERS):
+            threading.Thread(target=self._worker, daemon=True).start()
+
+    def want(self, centre, box):
+        """Queue the window around `centre`; drop what has fallen outside."""
+        low = max(0, centre - KEEP)
+        high = min(len(self.cards) - 1, centre + KEEP)
+        for index in sorted(range(low, high + 1), key=lambda i: abs(i - centre)):
+            if self.cards[index].surface is None and index not in self.pending:
+                self.pending.add(index)
+                self.queue.put((index, box))
+        for index, card in enumerate(self.cards):
+            if not low <= index <= high:
+                card.surface = None
+
+    def _worker(self):
+        while True:
+            index, box = self.queue.get()
+            card = self.cards[index]
+            pixbuf = None
+            try:
+                info = GdkPixbuf.Pixbuf.get_file_info(card.path)
+                if info and info[0] is not None:
+                    GLib.idle_add(self._size, card, info[1], info[2])
+                pixbuf = self._decode(card.path, box)
+            except (GLib.Error, OSError):
+                pass
+            GLib.idle_add(self._ready, index, pixbuf)
+
+    def _key(self, path, box):
+        stat = os.stat(path)
+        return hashlib.sha1(
+            f"{path}:{stat.st_mtime_ns}:{stat.st_size}:{box[0]}x{box[1]}".encode()
+        ).hexdigest() + ".jpg"
+
+    def _decode(self, path, box):
+        cached = self.dir / self._key(path, box)
+        if cached.exists():
+            try:
+                pixbuf = GdkPixbuf.Pixbuf.new_from_file(str(cached))
+                os.utime(cached, None)            # prune() reads the mtime
+                return pixbuf
+            except GLib.Error:
+                cached.unlink(missing_ok=True)
+
+        pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, box[0], box[1], True)
+        try:
+            self.dir.mkdir(parents=True, exist_ok=True)
+            tmp = cached.with_suffix(f".{os.getpid()}.tmp")
+            # JPEG, not PNG: a lossless thumbnail of a 4K wallpaper is most
+            # of a megabyte, and the cache scales with the directory.
+            pixbuf.savev(str(tmp), "jpeg", ["quality"], ["90"])
+            os.replace(tmp, cached)
+        except (OSError, GLib.Error):
+            pass
+        return pixbuf
+
+    def prune(self):
+        """Drop thumbnails nothing has asked for in a month.
+
+        Cheaper than working out which are current, and it cannot get it
+        wrong: an entry is keyed by path, mtime and drawn size, so one
+        whose wallpaper was edited or deleted -- or that belongs to the
+        other monitor's geometry -- simply stops being touched.
+        """
+        cutoff = time.time() - self.STALE
+        try:
+            for entry in self.dir.iterdir():
+                if entry.suffix != ".tmp" and entry.stat().st_mtime < cutoff:
+                    entry.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _size(self, card, width, height):
+        card.width, card.height = width, height
+        self.on_ready(card)
+        return False
+
+    def _ready(self, index, pixbuf):
+        self.pending.discard(index)
+        card = self.cards[index]
+        if pixbuf is not None:
+            # The surface is built here, on the main loop, not in a worker.
+            card.surface = Gdk.cairo_surface_create_from_pixbuf(pixbuf, 1, None)
+        self.on_ready(card)
+        return False
+
+
+class Gallery(Gtk.Window):
+    def __init__(self, cards, selected):
+        super().__init__()
+        self.cards = cards
+        self.target = selected
+        self.pos = float(selected)
+        self.accent = accent_colour()
+        self.quads = []
+        self.tick = None
+        self.scrolled = 0.0
+        self.box = None                           # card box, in real pixels
+        self.ratio = oversample()
+        self.thumbs = Thumbnails(cards, self.thumbnail_ready)
+
+        GtkLayerShell.init_for_window(self)
+        GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
+        GtkLayerShell.set_namespace(self, "rice-gallery")
+        for edge in ("TOP", "BOTTOM", "LEFT", "RIGHT"):
+            GtkLayerShell.set_anchor(self, getattr(GtkLayerShell.Edge, edge), True)
+        # -1, or waybar's exclusive zone would push the overlay down.
+        GtkLayerShell.set_exclusive_zone(self, -1)
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.EXCLUSIVE)
+
+        monitor = focused_monitor()
+        if monitor is not None:
+            GtkLayerShell.set_monitor(self, monitor)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        self.add(box)
+
+        self.area = Gtk.DrawingArea()
+        self.area.set_hexpand(True)
+        self.area.set_vexpand(True)
+        self.area.add_events(
+            Gdk.EventMask.SCROLL_MASK
+            | Gdk.EventMask.SMOOTH_SCROLL_MASK
+            | Gdk.EventMask.BUTTON_PRESS_MASK
+        )
+        self.area.connect("draw", self.on_draw)
+        self.area.connect("scroll-event", self.on_scroll)
+        self.area.connect("button-press-event", self.on_click)
+        box.pack_start(self.area, True, True, 0)
+
+        footer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        footer.get_style_context().add_class("footer")
+        self.name_label = self._label(footer, "name")
+        self.meta_label = self._label(footer, "meta")
+        self._label(footer, "hint").set_text(
+            "← →  browse    ↵  apply    esc  close"
+        )
+        box.pack_start(footer, False, False, 0)
+
+        self.connect("key-press-event", self.on_key)
+        self.update_footer()
+
+    @staticmethod
+    def _label(box, style):
+        label = Gtk.Label()
+        label.get_style_context().add_class(style)
+        label.set_margin_top(2 if style != "hint" else 10)
+        box.pack_start(label, False, False, 0)
+        return label
+
+    # ---- state --------------------------------------------------------
+    def select(self, index):
+        index = max(0, min(len(self.cards) - 1, index))
+        if index == self.target:
+            return
+        self.target = index
+        if self.box is not None:
+            self.thumbs.want(index, self.box)
+        self.update_footer()
+        self.animate()
+
+    def update_footer(self):
+        card = self.cards[self.target]
+        self.name_label.set_text(card.name)
+        meta = f"{self.target + 1} / {len(self.cards)}"
+        if card.width and card.height:
+            meta += f"  ·  {card.width}×{card.height}"
+        self.meta_label.set_text(meta)
+
+    @property
+    def moving(self):
+        """Mid-glide: the strips drop to the cheap filter until it settles."""
+        return self.tick is not None
+
+    def animate(self):
+        if self.tick is None:
+            self.tick = self.area.add_tick_callback(self._frame)
+
+    def _frame(self, _widget, _clock):
+        delta = self.target - self.pos
+        if abs(delta) < 0.002:
+            self.pos = float(self.target)
+            self.redraw()
+            self.tick = None
+            return GLib.SOURCE_REMOVE
+        self.pos += delta * EASE
+        self.redraw()
+        return GLib.SOURCE_CONTINUE
+
+    def redraw(self):
+        """Damage the strip's band, not the whole scrim.
+
+        Nothing outside it can move: a card is at most as tall as the box,
+        because DEPTH pushes a turned card further back than its near edge
+        swings forward. Repainting the rest is a third of the frame.
+        """
+        alloc = self.area.get_allocation()
+        half = alloc.height * CARD_H_FRAC / 2 + 4
+        self.area.queue_draw_area(
+            0, int(alloc.height * CENTER_Y - half), alloc.width, int(2 * half) + 1
+        )
+
+    def thumbnail_ready(self, card):
+        if card is self.cards[self.target]:
+            self.update_footer()
+        self.redraw()
+
+    def apply(self):
+        path = self.cards[self.target].path
+        try:
+            subprocess.Popen(
+                ["rice-wallpaper", "set", path],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            notify(NAME, "rice-wallpaper is not on PATH")
+        Gtk.main_quit()
+
+    # ---- input --------------------------------------------------------
+    def on_key(self, _widget, event):
+        key = event.keyval
+        if key in (Gdk.KEY_Escape, Gdk.KEY_q):
+            Gtk.main_quit()
+        elif key in (Gdk.KEY_Return, Gdk.KEY_KP_Enter, Gdk.KEY_space):
+            self.apply()
+        elif key in (Gdk.KEY_Left, Gdk.KEY_h):
+            self.select(self.target - 1)
+        elif key in (Gdk.KEY_Right, Gdk.KEY_l):
+            self.select(self.target + 1)
+        elif key in (Gdk.KEY_Home, Gdk.KEY_g):
+            self.select(0)
+        elif key in (Gdk.KEY_End, Gdk.KEY_G):
+            self.select(len(self.cards) - 1)
+        elif key == Gdk.KEY_Page_Down:
+            self.select(self.target + 5)
+        elif key == Gdk.KEY_Page_Up:
+            self.select(self.target - 5)
+        else:
+            return False
+        return True
+
+    def on_scroll(self, _widget, event):
+        if event.direction == Gdk.ScrollDirection.SMOOTH:
+            # A touchpad sends fractions; step once per notch of travel.
+            self.scrolled += event.delta_x + event.delta_y
+            step = int(self.scrolled)
+            if step:
+                self.scrolled -= step
+                self.select(self.target + step)
+        elif event.direction in (Gdk.ScrollDirection.UP, Gdk.ScrollDirection.LEFT):
+            self.select(self.target - 1)
+        elif event.direction in (Gdk.ScrollDirection.DOWN, Gdk.ScrollDirection.RIGHT):
+            self.select(self.target + 1)
+        return True
+
+    def on_click(self, _widget, event):
+        # Front to back: the topmost card under the pointer wins.
+        for index, quad in reversed(self.quads):
+            if inside(quad, event.x, event.y):
+                if index == self.target:
+                    self.apply()
+                else:
+                    self.select(index)
+                return True
+        Gtk.main_quit()
+        return True
+
+    # ---- drawing ------------------------------------------------------
+    def on_draw(self, widget, cr):
+        alloc = widget.get_allocation()
+        box_h = alloc.height * CARD_H_FRAC
+        box_w = alloc.width * CARD_W_FRAC
+        cx = alloc.width / 2
+        cy = alloc.height * CENTER_Y
+
+        # cairo's user space stays logical whatever the output scale, so
+        # the source has to be decoded against that scale or every card is
+        # a magnified thumbnail.
+        box = (round(box_w * self.ratio), round(box_h * self.ratio))
+        if box != self.box:
+            self.box = box
+            self.thumbs.want(self.target, box)
+
+        # Past VISIBLE the stack hides its own tail, and drawing it would
+        # cost a directory of 200 wallpapers a frame it cannot afford.
+        # Back to front, so the selected card lands on top of its
+        # neighbours -- and so on_click can walk self.quads in reverse.
+        self.quads = []
+        order = sorted(
+            (i for i in range(len(self.cards)) if abs(i - self.pos) <= VISIBLE),
+            key=lambda i: -abs(i - self.pos),
+        )
+        for index in order:
+            view = self.place(index, box_w, box_h, cx, cy)
+            if view is None:
+                continue
+            xs = [x for x, _ in view.quad]
+            if max(xs) < 0 or min(xs) > alloc.width:
+                continue
+            self.paint(cr, self.cards[index], index, view)
+            self.quads.append((index, view.quad))
+
+        return False
+
+    def place(self, index, box_w, box_h, cx, cy):
+        """Project one card onto the screen for this frame."""
+        u = index - self.pos
+        t = math.tanh(u * SPREAD)
+        angle = -MAX_ANGLE * t
+        card = self.cards[index]
+
+        height = min(box_h, box_w / card.aspect)
+        width = height * card.aspect
+        if width <= 0 or height <= 0:
+            return None
+
+        # Linear near the front, saturating past REACH: a long directory
+        # piles up at the ends of the strip instead of walking off screen.
+        world_x = (SPACING * REACH * math.tanh(u / REACH) + GAP * t) * box_w
+        world_z = FOCAL * (1.0 + DEPTH * abs(t))
+        cos_a, sin_a = math.cos(angle), math.sin(angle)
+
+        def scale(local_x):
+            """Screen x and vertical scale for a point on the card's axis."""
+            z = world_z + local_x * sin_a
+            if z < 1.0:
+                z = 1.0
+            factor = FOCAL / z
+            return cx + (world_x + local_x * cos_a) * factor, factor
+
+        half_w, half_h = width / 2, height / 2
+        left_x, left_s = scale(-half_w)
+        right_x, right_s = scale(half_w)
+        quad = (
+            (left_x, cy - half_h * left_s),
+            (right_x, cy - half_h * right_s),
+            (right_x, cy + half_h * right_s),
+            (left_x, cy + half_h * left_s),
+        )
+        step = STEP_PX * (1 + 0.6 * abs(u))
+        slices = int(min(MAX_SLICES, max(1, abs(left_s - right_s) * height / step)))
+        return Projection(quad, scale, half_w, half_h, cy, t, slices)
+
+    def paint(self, cr, card, index, view):
+        quad, half_w, half_h = view.quad, view.half_w, view.half_h
+        selected = index == self.target
+
+        if card.surface is None:
+            cr.set_source_rgba(*rgba("#181825", 0.85))
+            path(cr, quad)
+            cr.fill()
+        else:
+            cr.save()
+            path(cr, quad)
+            cr.clip()
+            self.paint_image(cr, card.surface, view, self.moving)
+            cr.restore()
+            dim = 0.34 * abs(view.t)
+            if dim > 0.01:
+                cr.set_source_rgba(0, 0, 0, dim)
+                path(cr, quad)
+                cr.fill()
+
+        path(cr, quad)
+        if selected:
+            cr.set_source_rgba(*rgba(self.accent, 0.95))
+            cr.set_line_width(2.0)
+        else:
+            cr.set_source_rgba(*rgba("#11111b", 0.75))
+            cr.set_line_width(1.0)
+        cr.stroke()
+
+    @staticmethod
+    def paint_image(cr, surface, view, moving):
+        scale, half_w, half_h, slices = (
+            view.scale, view.half_w, view.half_h, view.slices
+        )
+        src_w = surface.get_width()
+        src_h = surface.get_height()
+        cy = view.cy
+        filt = FILTER_MOVING if moving else FILTER_STILL
+
+        prev_x, prev_s = scale(-half_w)
+        for i in range(slices):
+            next_x, next_s = scale(-half_w + 2 * half_w * (i + 1) / slices)
+            width = next_x - prev_x
+            if width > 0:
+                src_a = src_w * i / slices
+                src_b = src_w * (i + 1) / slices
+                mid_s = (prev_s + next_s) / 2
+                sx = width / (src_b - src_a)
+                cr.save()
+                cr.translate(prev_x, cy - half_h * mid_s)
+                cr.scale(sx, 2 * half_h * mid_s / src_h)
+                cr.set_source_surface(surface, -src_a, 0)
+                cr.get_source().set_extend(cairo.Extend.PAD)
+                cr.get_source().set_filter(filt)
+                # Filling the strip beats clipping it and painting the
+                # whole pattern; the overlap keeps seams out of the joins.
+                cr.rectangle(0, 0, (src_b - src_a) + 0.75 / sx, src_h)
+                cr.fill()
+                cr.restore()
+            prev_x, prev_s = next_x, next_s
+
+
+def path(cr, quad):
+    cr.move_to(*quad[0])
+    for point in quad[1:]:
+        cr.line_to(*point)
+    cr.close_path()
+
+
+def inside(quad, x, y):
+    """Point in convex quad: every edge must turn the same way."""
+    sign = 0
+    for i in range(4):
+        ax, ay = quad[i]
+        bx, by = quad[(i + 1) % 4]
+        cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+        if cross:
+            if sign and (cross > 0) != (sign > 0):
+                return False
+            sign = cross
+    return True
+
+
+def main():
+    if not HAVE_LAYER_SHELL:
+        os.execvp("rice-wallpaper", ["rice-wallpaper", "menu"])
+
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        sys.exit(__doc__.strip())
+
+    paths = [line for line in run_cmd("rice-wallpaper", "list").splitlines() if line]
+    if not paths:
+        notify(NAME, "No wallpapers found")
+        sys.exit(1)
+
+    current = os.path.realpath(run_cmd("rice-wallpaper", "current").strip())
+    selected = next((i for i, p in enumerate(paths) if p == current), 0)
+
+    lock = toggle_guard(NAME)
+
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS.encode())
+    Gtk.StyleContext.add_provider_for_screen(
+        Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_USER + 1
+    )
+
+    window = Gallery([Card(p) for p in paths], selected)
+    window.show_all()
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, 15, Gtk.main_quit)
+    try:
+        Gtk.main()
+    finally:
+        window.thumbs.prune()
+        try:
+            os.unlink(lock)
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    main()

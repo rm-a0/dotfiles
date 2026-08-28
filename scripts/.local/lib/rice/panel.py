@@ -562,7 +562,7 @@ class RicePanel(Gtk.Window):
         Gtk.main_quit()
 
 
-def _toggle_guard(name):
+def toggle_guard(name):
     """Running again while open closes it, so a bar click toggles."""
     lock = f"/run/user/{os.getuid()}/{name}.pid"
     if os.path.exists(lock):
@@ -584,7 +584,7 @@ def run(panel_cls, fallback=None):
             os.execvp(fallback, [fallback])
         sys.exit(f"{panel_cls.NAME}: gir1.2-gtklayershell-0.1 is required")
 
-    lock = _toggle_guard(panel_cls.NAME)
+    lock = toggle_guard(panel_cls.NAME)
 
     provider = Gtk.CssProvider()
     provider.load_from_data(CSS.replace("ACCENT", accent_colour()).encode())

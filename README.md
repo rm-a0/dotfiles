@@ -81,7 +81,7 @@ Also not in apt: JetBrainsMono Nerd Font, oh-my-zsh + powerlevel10k.
 | `C` | close | `H J K L` | focus |
 | `V` | float | `SHIFT`+`HJKL` | move window |
 | `F` | fullscreen | `CTRL`+arrows | resize |
-| `W` | wallpaper picker | `SHIFT+V` | clipboard history |
+| `W` | wallpaper gallery | `SHIFT+V` | clipboard history |
 | `CTRL+L` | lock | `M` | logout menu |
 | `Print` | screenshot region | `SHIFT+Print` | screenshot screen |
 
@@ -94,6 +94,7 @@ In `scripts/.local/bin`, symlinked to `~/.local/bin`.
 | | |
 |---|---|
 | `rice-wallpaper` | set / pick / random / restore |
+| `rice-wallpaper-gallery` | the `SUPER + W` thumbnail carousel |
 | `rice-accent` | derive an accent from the wallpaper |
 | `rice-screenshot` | region, screen or window |
 | `rice-wifi` `rice-bluetooth` `rice-audio` `rice-brightness` `rice-battery` | bar dropdowns |

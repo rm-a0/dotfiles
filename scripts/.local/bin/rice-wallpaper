@@ -5,6 +5,7 @@
 # read by hyprpaper and hyprlock. Nothing else hardcodes a path.
 #
 #   rice-wallpaper set <file>   apply and remember an image
+#   rice-wallpaper gallery      pick one from the thumbnail carousel
 #   rice-wallpaper menu         pick one with fuzzel
 #   rice-wallpaper random       pick one at random
 #   rice-wallpaper restore      re-apply the remembered one (login)
@@ -18,6 +19,11 @@ STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/rice"
 LINK="$STATE_DIR/current-wallpaper"
 
 die() { printf 'rice-wallpaper: %s\n' "$*" >&2; exit 1; }
+
+notify() {
+    command -v notify-send >/dev/null 2>&1 || return 0
+    notify-send -a Wallpaper -i "$1" 'Wallpaper' "$(basename "$1")"
+}
 
 list() {
     [ -d "$WALLPAPER_DIR" ] || die "no such directory: $WALLPAPER_DIR"
@@ -58,6 +64,13 @@ case "$cmd" in
         apply "$2" >/dev/null
         notify "$(readlink -f "$2")"
         ;;
+    gallery)
+        # The carousel falls back to `menu` itself without GtkLayerShell.
+        if command -v rice-wallpaper-gallery >/dev/null 2>&1; then
+            exec rice-wallpaper-gallery
+        fi
+        exec "$0" menu
+        ;;
     menu)
         command -v fuzzel >/dev/null 2>&1 || die "fuzzel is not installed"
         mapfile -t images < <(list)
@@ -97,5 +110,5 @@ case "$cmd" in
         readlink -f "$LINK"
         ;;
     list) list ;;
-    *) die "unknown command: $cmd (try: set menu random restore current list)" ;;
+    *) die "unknown command: $cmd (try: set gallery menu random restore current list)" ;;
 esac
