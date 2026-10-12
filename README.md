@@ -23,49 +23,111 @@ the wallpaper.
 ## Install
 
 ```sh
+sudo apt install -y git
 git clone https://github.com/<you>/dotfiles ~/dotfiles
 cd ~/dotfiles && ./install.sh
 ```
 
-`install.sh` wraps `stow --no-folding`. Pass package names to stow only some,
-`-D` to remove. Safe to re-run.
-
-<details>
-<summary>Dependencies</summary>
+On a stock Debian 13 that is the whole install. Safe to re-run: every phase is
+a no-op once done.
 
 ```sh
-sudo apt install \
-  hyprland hyprpaper hypridle hyprlock uwsm \
-  waybar mako-notifier fuzzel wlogout kitty fastfetch \
-  python3-gi gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 \
-  brightnessctl playerctl wl-clipboard cliphist grim slurp jq imagemagick chafa \
-  network-manager network-manager-gnome bluez blueman \
-  wireplumber pavucontrol power-profiles-daemon \
-  gnome-control-center nwg-look nautilus loupe \
-  btop cava zathura zathura-pdf-poppler \
-  papirus-icon-theme bibata-cursor-theme stow zsh build-essential \
-  fonts-noto-color-emoji fonts-symbola \
-  greetd tuigreet
+./install.sh                 everything
+./install.sh --stow          symlinks only
+./install.sh --stow hypr kitty
+./install.sh -D              unstow, restore a bare $HOME
+./install.sh --no-session    keep the current login manager
+./install.sh --no-sudo       skip every phase needing root
 ```
+
+Whatever stow would collide with (`/etc/skel`'s `.zshrc`, a GTK-written
+`settings.ini`) is moved to `~/.dotfiles-backup-<timestamp>/`, not overwritten.
+Hardware firmware is not installed — that is the Debian installer's job.
+
+No wallpapers ship with the repo: put images in `~/Pictures/wallpapers` (or
+set `RICE_WALLPAPER_DIR`), or the desktop and lock screen stay blank.
+
+Per-machine config stays out of the repo, loaded only if present:
+
+| File | For |
+|---|---|
+| `~/.zshrc.local` | private aliases, functions, env |
+| `~/.config/hypr/lua/monitors_local.lua` | output modes, scale, layout |
+
+<details>
+<summary>What it installs</summary>
+
+**Backports.** The Hyprland stack — `hyprland`, `hyprpaper`, `hypridle`,
+`hyprlock`, `uwsm`, `xdg-desktop-portal-hyprland`, `hyprpolkitagent` — is not
+in `trixie/main`, so a stock box answers `apt install hyprland` with "Unable
+to locate package". The script adds `backports.sources` and installs that
+stack with `-t trixie-backports`; backports is pin priority 100, so without
+the suite apt will not raise the backported dependencies and stops on
+`libxkbcommon0 (>= 1.12.3) but 1.7.0-2 is to be installed`.
+
+**apt**, grouped as in the script:
+
+```sh
+# compositor + session          (backports, installed with -t)
+hyprland hyprpaper hypridle hyprlock uwsm xdg-desktop-portal-hyprland hyprpolkitagent
+# the rest of the session
+waybar mako-notifier fuzzel wlogout kitty fastfetch
+# the bar dropdowns are GTK layer-shell panels
+python3-gi python3-gi-cairo python3-cairo
+gir1.2-gtk-3.0 gir1.2-gtklayershell-0.1 gir1.2-gdkpixbuf-2.0 gir1.2-pango-1.0
+# called by the rice-* scripts
+brightnessctl playerctl wl-clipboard cliphist grim slurp jq imagemagick
+chafa libnotify-bin xdg-utils dconf-cli libglib2.0-bin upower
+# network, bluetooth, audio, power
+network-manager network-manager-gnome bluez blueman
+pipewire pipewire-pulse wireplumber gstreamer1.0-pipewire
+pavucontrol power-profiles-daemon
+# apps the keybinds and mime defaults point at
+gnome-control-center nwg-look nautilus loupe btop cava zathura zathura-pdf-poppler
+# theme + fonts
+papirus-icon-theme bibata-cursor-theme
+fonts-noto-color-emoji fonts-symbola fonts-jetbrains-mono
+# shell and CLI tooling
+stow zsh git curl wget unzip ca-certificates gnupg build-essential
+ripgrep fd-find nodejs npm
+# login manager
+greetd tuigreet
+```
+
+Easy to miss: `libglib2.0-bin` (gsettings), `libnotify-bin` (notify-send),
+`xdg-utils` (xdg-mime) and `dconf-cli`, without which `rice-gsettings`,
+`rice-mime` and every script that notifies fail.
+
+**Not in apt**, fetched into `~/.local` at pinned versions, each checked
+against a pinned sha256:
+
+| | | |
+|---|---|---|
+| Neovim | `v0.12.5` | trixie ships 0.10; nvim-treesitter `main` needs 0.12 |
+| tree-sitter CLI | `v0.26.13` | trixie ships 0.22; `main` needs >= 0.26.1 |
+| JetBrainsMono Nerd Font | `v3.4.0` | Mono faces only; the rest break cell alignment |
+
+Debian ships `fd` as `fdfind`, so `~/.local/bin/fd` is symlinked. oh-my-zsh and
+powerlevel10k are cloned, and the login shell set to zsh. Brave has its own
+repo; the script adds the keyring and list. Discord has only a `.deb`, installed
+through `rice-discord-update` — re-run that to update it. Vencord is manual;
+its install command is in that script.
+
+**Neovim plugins** are installed, then pinned to `lazy-lock.json` with
+`Lazy! restore` rather than `sync`. That lock is what holds telescope and
+nvim-treesitter on branches that agree — telescope `0.1.x` calls
+nvim-treesitter master-only APIs (`parsers.ft_to_lang`) that `main` does not
+have, and throws on every preview.
+
+</details>
+
+<details>
+<summary>Checking a codepoint renders</summary>
 
 The Nerd Font covers box-drawing and its own private-use range; it does not
 cover the emoji block, U+23BF or U+29C9, which a TUI renders as blank cells.
 `fc-list ":charset=<hex>" family` names the font backing a codepoint.
 
-Brave is `SUPER + B` and has its own repo:
-
-```sh
-sudo curl -fsSLo /usr/share/keyrings/brave-browser-archive-keyring.gpg \
-  https://brave-browser-apt-release.s3.brave.com/brave-browser-archive-keyring.gpg
-echo 'deb [signed-by=/usr/share/keyrings/brave-browser-archive-keyring.gpg] https://brave-browser-apt-release.s3.brave.com/ stable main' \
-  | sudo tee /etc/apt/sources.list.d/brave-browser-release.list
-sudo apt update && sudo apt install brave-browser
-```
-
-Not in apt at a usable version: Neovim ≥ 0.12 (trixie ships 0.10; nvim-treesitter
-`main` requires 0.12, and `master` is locked at 0.11) and tree-sitter CLI ≥ 0.26.1
-(trixie ships 0.22) — both from their upstream release tarballs into `~/.local`.
-Also not in apt: JetBrainsMono Nerd Font, oh-my-zsh + powerlevel10k.
 </details>
 
 ## Keys

@@ -35,7 +35,11 @@ return {
                     map("<leader>D", builtin.lsp_type_definitions, "Type [D]efinition")
                     map("<leader>ds", builtin.lsp_document_symbols, "[D]ocument [S]ymbols")
                     map("<leader>ws", builtin.lsp_dynamic_workspace_symbols, "[W]orkspace [S]ymbols")
+                    -- Workspace-wide rename. Files the server touches that
+                    -- weren't open come back as modified buffers; :wa writes
+                    -- them, and until then u undoes per buffer.
                     map("<leader>rn", vim.lsp.buf.rename, "[R]e[n]ame")
+                    map("<F2>", vim.lsp.buf.rename, "[R]e[n]ame")
                     map("<leader>ca", vim.lsp.buf.code_action, "[C]ode [A]ction")
                     map("K", vim.lsp.buf.hover, "Hover Documentation")
                     map("gD", vim.lsp.buf.declaration, "[G]oto [D]eclaration")

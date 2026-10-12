@@ -6,6 +6,7 @@ Falls back to rice-wifi-menu (fuzzel) without GtkLayerShell.
 
 import os
 import sys
+import tempfile
 
 sys.path.insert(
     0,
@@ -65,8 +66,41 @@ def saved_profiles():
     }
 
 
+def key_mgmt(security):
+    """nmcli SECURITY column to a profile key-mgmt; None if not PSK/SAE."""
+    if "802.1X" in security or "WPA" not in security:
+        return None
+    if "WPA3" in security and "WPA1" not in security and "WPA2" not in security:
+        return "sae"
+    return "wpa-psk"
+
+
+def connect_secured(ssid, mgmt, password):
+    """Profile first, key second, through a private file: argv is readable
+    by every user via /proc. Returns `connection up`'s stdout.
+    """
+    run_cmd("nmcli", "connection", "add", "type", "wifi", "con-name", ssid,
+            "ssid", ssid, "wifi-sec.key-mgmt", mgmt, "connection.autoconnect", "no")
+    fd, path = tempfile.mkstemp(dir=os.environ.get("XDG_RUNTIME_DIR"))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(f"802-11-wireless-security.psk:{password}\n")
+        out = run_cmd("nmcli", "-w", str(TIMEOUT), "connection", "up", "id", ssid,
+                      "passwd-file", path)
+    finally:
+        os.unlink(path)
+    if "successful" in out.lower():
+        run_cmd("nmcli", "connection", "modify", "id", ssid, "connection.autoconnect", "yes")
+    else:
+        # A keyless profile left behind would skip the prompt next time.
+        run_cmd("nmcli", "connection", "delete", "id", ssid)
+    return out
+
+
 def parse_networks(output):
-    """[(ssid, signal, secured, active)], strongest first, one row per SSID.
+    """[(ssid, signal, security, active)], strongest first, one row per SSID.
+
+    security is nmcli's SECURITY column, '' for an open network.
 
     nmcli lists an SSID once per AP; collapse to the strongest, keeping the
     in-use mark even when that is on a weaker one.
@@ -85,11 +119,12 @@ def parse_networks(output):
             signal = int(signal)
         except ValueError:
             signal = 0
-        secured = bool(security) and security != "--"
+        if security == "--":
+            security = ""
 
         previous = best.get(ssid)
         if previous is None or signal > previous[1]:
-            best[ssid] = (ssid, signal, secured, previous[3] if previous else False)
+            best[ssid] = (ssid, signal, security, previous[3] if previous else False)
         if in_use == "*":
             entry = best[ssid]
             best[ssid] = (entry[0], entry[1], entry[2], True)
@@ -145,8 +180,8 @@ class WifiPanel(RicePanel):
                 self.select_list(
                     box,
                     [(ssid, ssid, active, bars(signal),
-                      f"{signal}% {I_LOCK if secured else ' '}")
-                     for ssid, signal, secured, active in self.networks],
+                      f"{signal}% {I_LOCK if security else ' '}")
+                     for ssid, signal, security, active in self.networks],
                     self.on_pick,
                     max_visible=MAX_ROWS,
                 )
@@ -193,7 +228,7 @@ class WifiPanel(RicePanel):
         current = next((n for n in self.networks if n[0] == ssid), None)
         if current is None:
             return
-        _, _, secured, active = current
+        _, _, security, active = current
 
         if active:
             self.start(f"Disconnecting from {ssid}…",
@@ -206,7 +241,11 @@ class WifiPanel(RicePanel):
                        ["nmcli", "-w", str(TIMEOUT), "connection", "up", "id", ssid],
                        lambda out: self.done(out, ssid, "Connected",
                                              "Failed to connect"))
-        elif secured:
+        elif security:
+            if key_mgmt(security) is None:
+                # Enterprise and WEP need more than one password field.
+                self.finish("Set up in Network settings", ssid, False)
+                return
             # nmcli with no secrets agent hangs until it times out.
             self.ask = ssid
             self.refresh()
@@ -221,9 +260,10 @@ class WifiPanel(RicePanel):
         if not password:
             self.reload()
             return
+        security = next((n[2] for n in self.networks if n[0] == ssid), "")
+        mgmt = key_mgmt(security) or "wpa-psk"
         self.start(f"Connecting to {ssid}…",
-                   ["nmcli", "-w", str(TIMEOUT), "device", "wifi", "connect", ssid,
-                    "password", password],
+                   lambda: connect_secured(ssid, mgmt, password),
                    lambda out: self.done(out, ssid, "Connected",
                                          "Failed to connect"))
 

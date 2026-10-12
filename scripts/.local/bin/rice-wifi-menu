@@ -63,6 +63,26 @@ for row in "${rows[@]}"; do
     fi
 done
 
+# connect_secured <ssid> <key-mgmt> <password>
+# Profile first, key second, through a private file: argv is readable by
+# every user via /proc. printf is a builtin, so the key never hits argv.
+connect_secured() {
+    local ssid=$1 mgmt=$2 password=$3 pwfile rc=0
+    nmcli connection add type wifi con-name "$ssid" ssid "$ssid" \
+        wifi-sec.key-mgmt "$mgmt" connection.autoconnect no >/dev/null 2>&1 || return 1
+    pwfile="$(mktemp -p "${XDG_RUNTIME_DIR:-/tmp}")"
+    printf '802-11-wireless-security.psk:%s\n' "$password" > "$pwfile"
+    nmcli connection up id "$ssid" passwd-file "$pwfile" >/dev/null 2>&1 || rc=$?
+    rm -f -- "$pwfile"
+    if [ $rc -eq 0 ]; then
+        nmcli connection modify id "$ssid" connection.autoconnect yes >/dev/null 2>&1 || true
+    else
+        # A keyless profile left behind would skip the prompt next time.
+        nmcli connection delete id "$ssid" >/dev/null 2>&1 || true
+    fi
+    return $rc
+}
+
 entries=()
 declare -A ssid_of=()
 for ssid in "${order[@]}"; do
@@ -118,14 +138,31 @@ case "$choice" in
             exit 0
         fi
 
-        if nmcli device wifi connect "$ssid" >/dev/null 2>&1; then
-            rice_notify "Wi-Fi" "Connected" "$ssid"
+        security="${best_security[$ssid]}"
+        if [ -z "$security" ] || [ "$security" = "--" ]; then
+            if nmcli device wifi connect "$ssid" >/dev/null 2>&1; then
+                rice_notify "Wi-Fi" "Connected" "$ssid"
+            else
+                rice_notify "Wi-Fi" "Failed to connect" "$ssid"
+            fi
+            exit 0
+        fi
+
+        # Enterprise and WEP need more than one password field.
+        case "$security" in
+            *802.1X*)      mgmt="" ;;
+            *WPA1*|*WPA2*) mgmt=wpa-psk ;;
+            *WPA3*)        mgmt=sae ;;
+            *)             mgmt="" ;;
+        esac
+        if [ -z "$mgmt" ]; then
+            rice_notify "Wi-Fi" "Set up in Network settings" "$ssid"
             exit 0
         fi
 
         password="$(rice_password "Password for $ssid")" || exit 0
         [ -n "$password" ] || exit 0
-        if nmcli device wifi connect "$ssid" password "$password" >/dev/null 2>&1; then
+        if connect_secured "$ssid" "$mgmt" "$password"; then
             rice_notify "Wi-Fi" "Connected" "$ssid"
         else
             rice_notify "Wi-Fi" "Failed to connect" "$ssid"

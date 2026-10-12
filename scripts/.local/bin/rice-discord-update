@@ -19,7 +19,9 @@ installed="$(dpkg-query -W -f='${Version}' discord 2>/dev/null || echo none)"
 echo "installed: $installed"
 
 echo "downloading…"
-curl -fSL --progress-bar "$URL" -o "$tmp/discord.deb"
+# Discord publishes no checksum or signature; HTTPS is all there is, so keep
+# it on every redirect.
+curl -fSL --proto '=https' --tlsv1.2 --progress-bar "$URL" -o "$tmp/discord.deb"
 
 candidate="$(dpkg-deb -f "$tmp/discord.deb" Version)"
 echo "available: $candidate"

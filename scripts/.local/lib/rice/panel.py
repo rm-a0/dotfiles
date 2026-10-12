@@ -1,7 +1,8 @@
 """Base class for the rice-* GTK panels.
 
-Layer-shell surface under waybar, dismissed on Escape or focus loss, toggled
-by running it again. Subclass RicePanel, implement build(), pass to run().
+Layer-shell surface under waybar, dismissed on Escape, on a click outside
+it, or on focus loss, and toggled by running it again. Subclass RicePanel,
+implement build(), pass to run().
 
 Widgets live here, not in the panels, so all five look the same. Stock GTK
 widgets are overridden by node structure or replaced -- the theme engine
@@ -39,15 +40,21 @@ REFRESH = "\uf021"        # nf-fa-refresh
 # Catppuccin Mocha. ACCENT is substituted at runtime by accent_colour().
 CSS = """
 /* ── SURFACE ── same recipe as a waybar pill ────────────────────────── */
+/* The window spans the output so a click anywhere outside can dismiss it;
+ * only .panel is painted, and the layerrule's ignore_alpha keeps the blur
+ * off the rest. Same trick as waybar's gaps between pills. */
 window {
-    background-color: rgba(30, 30, 46, 0.86);
-    border: 1px solid rgba(49, 50, 68, 0.9);
-    border-radius: 14px;
+    background-color: transparent;
     font-family: "JetBrainsMono Nerd Font Mono", monospace;
     font-size: 12px;
     color: #cdd6f4;
 }
-.panel { padding: 14px 16px; }
+.panel {
+    background-color: rgba(30, 30, 46, 0.86);
+    border: 1px solid rgba(49, 50, 68, 0.9);
+    border-radius: 14px;
+    padding: 14px 16px;
+}
 
 /* ── TEXT ─────────────────────────────────────────────────────────── */
 .title    { color: #cdd6f4; font-size: 13px; font-weight: 600; }
@@ -221,10 +228,11 @@ def run_cmd(*args):
 def run_async(args, done=None):
     """run_cmd on a thread; `done(stdout)` fires on the main loop.
 
+    args may instead be a callable returning stdout, for multi-step work.
     Connecting takes seconds and would freeze the panel mid-click.
     """
     def worker():
-        out = run_cmd(*args)
+        out = args() if callable(args) else run_cmd(*args)
         if done is not None:
             GLib.idle_add(done, out)
 
@@ -282,26 +290,41 @@ class RicePanel(Gtk.Window):
 
     def __init__(self):
         super().__init__()
-        self.set_size_request(self.WIDTH, -1)
 
         GtkLayerShell.init_for_window(self)
         GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
         # One namespace for all panels -> one layerrule.
         GtkLayerShell.set_namespace(self, "rice-panel")
-        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.TOP, True)
-        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT, True)
-        # Measured after waybar's exclusive zone, i.e. gap below the bar.
-        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, 6)
-        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, 10)
+        # All four edges. focus-out alone only fires when another surface
+        # takes the keyboard, so clicking the desktop or the bar left the
+        # panel up; covering the output is what makes a click anywhere
+        # dismissable. No exclusive zone is claimed, so the surface still
+        # starts below waybar and the bar stays clickable -- clicking the
+        # same icon goes on toggling it.
+        for edge in ("TOP", "BOTTOM", "LEFT", "RIGHT"):
+            GtkLayerShell.set_anchor(self, getattr(GtkLayerShell.Edge, edge), True)
         GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
 
         monitor = focused_monitor()
         if monitor is not None:
             GtkLayerShell.set_monitor(self, monitor)
 
+        # An event box, not a plain container: the catcher needs a window
+        # of its own to see presses no child claimed.
+        catcher = Gtk.EventBox()
+        catcher.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+        catcher.connect("button-press-event", self._on_click)
+
         self._box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
         self._box.get_style_context().add_class("panel")
-        self.add(self._box)
+        self._box.set_size_request(self.WIDTH, -1)
+        self._box.set_halign(Gtk.Align.END)
+        self._box.set_valign(Gtk.Align.START)
+        # Measured after waybar's exclusive zone, i.e. gap below the bar.
+        self._box.set_margin_top(6)
+        self._box.set_margin_end(10)
+        catcher.add(self._box)
+        self.add(catcher)
         self.build(self._box)
 
         self.connect("key-press-event", self._on_key)
@@ -552,6 +575,29 @@ class RicePanel(Gtk.Window):
         self.dismiss()
 
     # ---- lifecycle ----------------------------------------------------
+    def _on_click(self, _widget, event):
+        """A press that missed the panel dismisses it.
+
+        Two tests, because a press arrives one of two ways. A widget with
+        a window of its own -- a list, an entry, a switch -- is handed the
+        press directly and bubbles it up still carrying *its* coordinates,
+        so those have to be read as a widget, not as a position. Anything
+        else (a label, the box's own padding) is delivered to the catcher,
+        where the coordinates do share the panel's space.
+        """
+        widget = Gtk.get_event_widget(event)
+        while widget is not None:
+            if widget is self._box:
+                return False
+            widget = widget.get_parent()
+
+        box = self._box.get_allocation()
+        if (box.x <= event.x <= box.x + box.width
+                and box.y <= event.y <= box.y + box.height):
+            return False
+        self.dismiss()
+        return True
+
     def _on_key(self, _widget, event):
         if event.keyval == Gdk.KEY_Escape:
             self.dismiss()
